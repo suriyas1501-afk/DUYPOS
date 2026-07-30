@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#059669"/>
+  <path d="M128 168h256a16 16 0 0 1 16 16v192a24 24 0 0 1-24 24H136a24 24 0 0 1-24-24V184a16 16 0 0 1 16-16z" fill="#ffffff" opacity="0.95"/>
+  <rect x="112" y="112" width="288" height="72" rx="20" fill="#a7f3d0"/>
+  <text x="256" y="330" font-family="Arial, sans-serif" font-size="150" font-weight="bold" fill="#059669" text-anchor="middle">฿</text>
+</svg>

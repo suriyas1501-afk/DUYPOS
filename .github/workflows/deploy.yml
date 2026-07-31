@@ -28,6 +28,9 @@ jobs:
 
       - run: npm ci
 
+      # เทสต์เอนจินคิดเงิน/สต็อก/ใบกำกับภาษี — แดงแล้วต้องไม่ deploy ขึ้นเว็บที่ร้านใช้จริง
+      - run: npm test
+
       # GitHub Pages เสิร์ฟที่ https://<user>.github.io/<repo>/ จึงต้องบอก base ตอน build
       - run: npm run build
         env:

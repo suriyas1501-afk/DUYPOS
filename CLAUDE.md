@@ -4,8 +4,16 @@ Thai-language, offline-first POS web app (PWA). All UI text is Thai. MVP scope: 
 
 ## Commands
 - `npm run dev` — dev server on port 5173 (or use `.claude/launch.json` → `pos-dev`)
+- `npm test` — vitest (money/stock/tax-invoice engine); CI runs it before deploying
 - `npm run build` — typecheck (`tsc -b`) + production build
 - `node scripts/gen-icons.mjs` — regenerate PWA PNGs from `public/icon.svg`
+
+## Tests
+`src/**/*.test.ts` are **characterization tests**: they pin behaviour that was hand-verified in the
+browser, so the multi-device refactor (see `SYNC-PLAN.md`) can't silently change what money does.
+A red test means behaviour changed — fix the code or change the expectation *deliberately*, never to
+make it pass. Dexie needs `fake-indexeddb` (loaded in `src/test/setup.ts`) and every test starts from
+`resetDb()` in `src/test/helpers.ts`; files run serially because they share one database name.
 
 ## Stack
 Vite + React 19 + TypeScript strict (`verbatimModuleSyntax` — always `import type`) + Tailwind v4 (emerald primary, cards `bg-white rounded-2xl`) + Dexie (IndexedDB `pos-db`) + Zustand + Recharts. Font: Noto Sans Thai (bundled).

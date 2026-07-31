@@ -12,6 +12,7 @@ import {
   YAxis,
 } from 'recharts'
 import { db } from '../db/db'
+import type { PaymentMethod, Sale } from '../db/types'
 import { useSettings } from '../db/hooks'
 import {
   Badge,
@@ -34,6 +35,8 @@ import {
   r2,
   startOfDay,
 } from '../lib/format'
+import { PAY_LABEL } from '../lib/receipt'
+import { saleCogs, saleRevenue } from '../lib/checkout'
 
 /* =========================================================
    ค่าคงที่ของกราฟ
@@ -57,6 +60,24 @@ const COMPACT_FMT = new Intl.NumberFormat('th-TH', {
   maximumFractionDigits: 1,
 })
 const compact = (v: number) => COMPACT_FMT.format(v)
+
+/** ช่องทางชำระเงินตามลำดับคงที่ */
+const PAY_METHODS = ['cash', 'transfer', 'card'] as const
+
+/** จำนวนสินค้า / สต็อก — อาจเป็นทศนิยม (เช่น 0.5 กก.) ห้ามปัดทิ้ง */
+const qtyText = (n: number) => n.toLocaleString('th-TH', { maximumFractionDigits: 3 })
+
+/** เอกสารคืนสินค้า: ยอดทุกช่องติดลบ → Σ หักกลบเอง แต่ห้ามนับเป็นจำนวนบิล */
+const isRefundDoc = (s: Sale) => s.kind === 'refund'
+
+/** ป้ายช่องทางชำระของบิล เช่น "เงินสด+โอน / QR" (รองรับบิลเก่าที่ไม่มี payments[]) */
+function payMethodsLabel(s: Sale): string {
+  const src =
+    s.payments && s.payments.length > 0 ? s.payments.map((p) => p.method) : [s.paymentMethod]
+  return PAY_METHODS.filter((m: PaymentMethod) => src.includes(m))
+    .map((m) => PAY_LABEL[m])
+    .join('+')
+}
 
 /* =========================================================
    Tooltip กราฟยอดขาย (recharts ส่ง active/payload/label ให้เอง)
@@ -163,26 +184,33 @@ export default function Dashboard() {
   // ---- สถิติวันนี้ (เฉพาะบิล completed) ----
   const kpi = useMemo(() => {
     let total = 0
-    let profit = 0
+    let revenue = 0
+    let cogs = 0
     let bills = 0
+    let refundCount = 0
+    let refundTotal = 0
     for (const s of sales7 ?? []) {
       if (s.createdAt < todayLo) continue
-      bills += 1
-      total += s.total
-      // it.total หักเฉพาะส่วนลดรายบรรทัด — ต้องหักส่วนลดระดับบิลด้วย
-      // (โปรระดับบิล = promoDiscount รวม − โปรรายบรรทัด, ส่วนลดท้ายบิล, แลกแต้ม)
-      let linePromo = 0
-      for (const it of s.items) {
-        profit += it.total - it.cost * it.qty
-        linePromo += it.promoDiscount
+      // เอกสารคืนสินค้ามียอดติดลบทุกช่อง → Σ หักกลบเองอัตโนมัติ
+      // แต่ต้องไม่นับเป็นจำนวนบิล ไม่งั้น "เฉลี่ยต่อบิล" จะผิด
+      if (isRefundDoc(s)) {
+        refundCount += 1
+        refundTotal += Math.abs(s.total)
+      } else {
+        bills += 1
       }
-      profit -= s.promoDiscount - linePromo + s.billDiscount + s.pointDiscount
+      total += s.total
+      // กำไรขั้นต้น = รายได้ − ต้นทุนขาย (สูตร/ลำดับการปัดเศษเดียวกับหน้ารายงานและหน้าบัญชี)
+      revenue += saleRevenue(s)
+      cogs += saleCogs(s)
     }
     return {
       total: r2(total),
-      profit: r2(profit),
+      profit: r2(r2(revenue) - r2(cogs)),
       bills,
       avg: bills > 0 ? r2(total / bills) : 0,
+      refundCount,
+      refundTotal: r2(refundTotal),
     }
   }, [sales7, todayLo])
 
@@ -206,6 +234,7 @@ export default function Dashboard() {
   const top = useMemo(() => {
     const m = new Map<string, { name: string; qty: number; total: number }>()
     for (const s of sales7 ?? []) {
+      // รวมรายการของเอกสารคืนสินค้าด้วย (qty/total ติดลบ) เพื่อให้ยอดสุทธิถูก
       for (const it of s.items) {
         const g = m.get(it.name) ?? { name: it.name, qty: 0, total: 0 }
         g.qty += it.qty
@@ -214,7 +243,9 @@ export default function Dashboard() {
       }
     }
     return [...m.values()]
-      .map((g) => ({ ...g, total: r2(g.total) }))
+      .map((g) => ({ ...g, total: r2(g.total), qty: r2(g.qty) }))
+      // สินค้าที่ถูกคืนจนยอดสุทธิ ≤ 0 ตัดออกจากอันดับขายดี
+      .filter((g) => g.total > 0)
       .sort((a, b) => b.total - a.total)
       .slice(0, 5)
   }, [sales7])
@@ -258,12 +289,26 @@ export default function Dashboard() {
       />
 
       <div className="space-y-4">
+        {/* ===== แถบแจ้งการคืนสินค้าของวันนี้ (ยอดหักกลบให้แล้ว) ===== */}
+        {kpi.refundCount > 0 && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-700">
+            <Icon name="undo" size={16} />
+            <span>
+              วันนี้คืนสินค้า <span className="font-bold">{baht(kpi.refundCount)}</span> รายการ
+            </span>
+            <span className="font-bold">(-฿{baht(kpi.refundTotal)})</span>
+            <span className="text-xs text-rose-500">
+              · หักออกจากยอดขายและกำไรวันนี้แล้ว (ไม่นับเป็นจำนวนบิล)
+            </span>
+          </div>
+        )}
+
         {/* ===== การ์ดสถิติวันนี้ 4 ใบ ===== */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard
             icon="cash"
             tone="bg-emerald-50 text-emerald-600"
-            label="ยอดขายวันนี้"
+            label={kpi.refundCount > 0 ? 'ยอดขายสุทธิวันนี้' : 'ยอดขายวันนี้'}
             value={baht(kpi.total)}
             unit="บาท"
           />
@@ -335,7 +380,7 @@ export default function Dashboard() {
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-medium text-slate-700">{p.name}</div>
-                      <div className="text-xs text-slate-400">{baht(p.qty)} ชิ้น</div>
+                      <div className="text-xs text-slate-400">{qtyText(p.qty)} ชิ้น</div>
                     </div>
                     <div className="text-sm font-semibold text-slate-800">฿{baht(p.total)}</div>
                   </div>
@@ -370,7 +415,7 @@ export default function Dashboard() {
                     <div className="min-w-0 flex-1 truncate text-sm font-medium text-slate-700">
                       {p.name}
                     </div>
-                    <Badge color="red">เหลือ {baht(p.stock)}</Badge>
+                    <Badge color="red">เหลือ {qtyText(p.stock)}</Badge>
                   </div>
                 ))}
               </div>
@@ -393,28 +438,39 @@ export default function Dashboard() {
               <EmptyState icon="receipt" title="ยังไม่มีบิลวันนี้" />
             ) : (
               <div className="divide-y divide-slate-50">
-                {recent.map((s) => (
-                  <div key={s.id} className="flex items-center gap-3 px-5 py-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium text-slate-700">
-                        {s.receiptNo}
+                {recent.map((s) => {
+                  const refund = isRefundDoc(s)
+                  return (
+                    <div key={s.id} className="flex items-center gap-3 px-5 py-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-medium text-slate-700">
+                          {s.receiptNo}
+                        </div>
+                        <div className="truncate text-xs text-slate-400">
+                          {fmtTime(s.createdAt)} · {payMethodsLabel(s)}
+                        </div>
                       </div>
-                      <div className="text-xs text-slate-400">{fmtTime(s.createdAt)}</div>
+                      {s.status !== 'completed' ? (
+                        <Badge color="red">ยกเลิก</Badge>
+                      ) : refund ? (
+                        <Badge color="red">คืนสินค้า</Badge>
+                      ) : (
+                        <Badge color="green">สำเร็จ</Badge>
+                      )}
+                      <div
+                        className={`text-sm font-semibold ${
+                          s.status === 'voided'
+                            ? 'text-slate-400 line-through'
+                            : refund
+                              ? 'text-rose-600'
+                              : 'text-slate-800'
+                        }`}
+                      >
+                        {refund ? '-' : ''}฿{baht(Math.abs(s.total))}
+                      </div>
                     </div>
-                    {s.status === 'completed' ? (
-                      <Badge color="green">สำเร็จ</Badge>
-                    ) : (
-                      <Badge color="red">ยกเลิก</Badge>
-                    )}
-                    <div
-                      className={`text-sm font-semibold ${
-                        s.status === 'voided' ? 'text-slate-400 line-through' : 'text-slate-800'
-                      }`}
-                    >
-                      ฿{baht(s.total)}
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </Card>

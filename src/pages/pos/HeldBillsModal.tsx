@@ -23,6 +23,11 @@ export default function HeldBillsModal({
       billDiscountType: b.billDiscountType,
       billDiscountValue: b.billDiscountValue,
       redeemPoints: b.redeemPoints,
+      couponCode: b.couponCode,
+      // ผู้อนุมัติส่วนลดกลับเข้าตะกร้าพร้อมตัวเลขส่วนลดเสมอ — ผู้จัดการอนุมัติบิลใบนี้ไว้แล้ว
+      // ตอนพักบิล จึงไม่ต้องขออนุมัติซ้ำ (บิลเก่าที่ไม่มีผู้อนุมัติจะถูก CartPanel ล้างส่วนลดให้)
+      discountApprovedById: b.discountApprovedById,
+      discountApprovedByName: b.discountApprovedByName,
     })
     if (b.id != null) void db.heldBills.delete(b.id)
     toast.success('เรียกบิลกลับเข้าตะกร้าแล้ว')
@@ -56,6 +61,7 @@ export default function HeldBillsModal({
                     <div className="truncate text-sm font-medium text-slate-700">{b.label}</div>
                     <div className="text-xs text-slate-400">
                       {fmtDateTime(b.createdAt)} · {count} รายการ
+                      {b.couponCode ? ` · คูปอง ${b.couponCode}` : ''}
                     </div>
                   </div>
                   <Button size="sm" icon="cart" onClick={() => tryLoad(b)}>

@@ -1,0 +1,4 @@
+# SPA fallback — ทุก URL (/pos, /sales, ...) ต้องเสิร์ฟ index.html
+# ไม่งั้นรีเฟรชหน้าที่ไม่ใช่หน้าแรกจะขึ้น 404
+# ใช้ได้กับ Netlify และ Cloudflare Pages
+/*    /index.html   200

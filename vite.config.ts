@@ -3,7 +3,17 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
+/**
+ * โฟลเดอร์ที่แอปถูกวางบนเว็บ
+ * - ค่าเริ่มต้น '/' = วางที่รากโดเมน (Netlify / Cloudflare / โฮสต์ของตัวเอง) และตอน npm run dev
+ * - GitHub Pages เป็น URL แบบ /<ชื่อ repo>/ จึงต้องตั้งผ่าน env ตอน build เท่านั้น
+ *   (ดู .github/workflows/deploy.yml — ตั้ง DEPLOY_BASE=/DUYPOS/)
+ * ห้าม hard-code ไว้ในไฟล์นี้ ไม่งั้น dev server กับโฮสต์อื่นจะโหลดไฟล์ไม่เจอ
+ */
+const base = process.env.DEPLOY_BASE || '/'
+
 export default defineConfig({
+  base,
   plugins: [
     react(),
     tailwindcss(),

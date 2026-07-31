@@ -6,18 +6,53 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
-import { useSettings } from '../db/hooks'
-import type { Product } from '../db/types'
+import { useCurrentShift, useSettings } from '../db/hooks'
+import type { Product, ProductUnit } from '../db/types'
 import { useCart } from '../stores/cartStore'
+import { useAuth } from '../stores/authStore'
 import { computeTotals } from '../lib/totals'
 import { baht } from '../lib/format'
-import { Badge, Button, EmptyState, Icon, INPUT_CLS, Spinner } from '../components/ui'
+import {
+  Badge,
+  Button,
+  EmptyState,
+  Icon,
+  INPUT_CLS,
+  isModalOpen,
+  Spinner,
+  toast,
+} from '../components/ui'
 import OptionModal from './pos/OptionModal'
 import CustomItemModal from './pos/CustomItemModal'
 import CartPanel from './pos/CartPanel'
 import PaymentModal from './pos/PaymentModal'
+
+/** เป้าหมายที่จะเปิดโมดัลตัวเลือก (พร้อมหน่วยที่ยิงบาร์โค้ดมา ถ้ามี) */
+interface PickTarget {
+  p: Product
+  unit?: ProductUnit
+}
+
+/** ต้องถามรายละเอียดก่อนลงตะกร้าหรือไม่ (ตัวเลือก / หลายหน่วย / ชั่งน้ำหนัก) */
+const needsDetail = (p: Product) =>
+  (p.options?.length ?? 0) > 0 || (p.units?.length ?? 0) > 0 || !!p.allowDecimalQty
+
+/** ข้อความที่ยิงมาดูเหมือนบาร์โค้ด (ตัวเลขล้วนตั้งแต่ 6 หลัก) ไม่ใช่คำค้นหาที่พนักงานพิมพ์เอง */
+const looksLikeBarcode = (s: string) => /^\d{6,}$/.test(s)
+
+/** ค้นบาร์โค้ดในรายการสินค้าที่กำหนด: บาร์โค้ดหลักก่อน แล้วค่อยไล่หาบาร์โค้ดหน่วยย่อย (แพ็ค/ลัง) */
+function findCodeIn(list: Product[], code: string): PickTarget | null {
+  const main = list.find((p) => (p.barcode ?? '') === code)
+  if (main) return { p: main }
+  for (const p of list) {
+    const u = (p.units ?? []).find((x) => (x.barcode ?? '') === code)
+    if (u) return { p, unit: u }
+  }
+  return null
+}
 
 /* ===== ชิปหมวดหมู่ ===== */
 function Chip({
@@ -71,6 +106,9 @@ function ProductCard({
     )
   ) : null
 
+  const multiUnit = (p.units?.length ?? 0) > 0
+  const hasWholesale = p.wholesalePrice != null
+
   return (
     <button
       type="button"
@@ -95,7 +133,28 @@ function ProductCard({
         >
           {p.name}
         </div>
-        <div className="mt-auto pt-1 text-sm font-bold text-emerald-700">฿{baht(p.price)}</div>
+        {(multiUnit || hasWholesale) && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {multiUnit && (
+              <Badge color="blue" className="px-1.5 py-0 text-[10px]">
+                หลายหน่วย
+              </Badge>
+            )}
+            {hasWholesale && (
+              <Badge color="amber" className="px-1.5 py-0 text-[10px]">
+                ราคาส่ง
+              </Badge>
+            )}
+          </div>
+        )}
+        <div className="mt-auto pt-1 text-sm font-bold text-emerald-700">
+          ฿{baht(p.price)}
+          {p.allowDecimalQty && (
+            <span className="ml-0.5 text-xs font-normal text-slate-400">
+              /{(p.unit ?? '').trim() || 'หน่วย'}
+            </span>
+          )}
+        </div>
       </div>
     </button>
   )
@@ -105,17 +164,20 @@ function ProductCard({
 export default function Pos() {
   const settings = useSettings()
   const cafe = settings.mode === 'cafe'
+  const navigate = useNavigate()
+  const { shift, loading: shiftLoading } = useCurrentShift()
 
   const items = useCart((s) => s.items)
   const memberId = useCart((s) => s.memberId)
   const billDiscountType = useCart((s) => s.billDiscountType)
   const billDiscountValue = useCart((s) => s.billDiscountValue)
   const redeemPoints = useCart((s) => s.redeemPoints)
+  const couponCode = useCart((s) => s.couponCode)
   const addProduct = useCart((s) => s.addProduct)
 
   const [search, setSearch] = useState('')
   const [catId, setCatId] = useState<number | 'all'>('all')
-  const [optionProduct, setOptionProduct] = useState<Product | null>(null)
+  const [optionTarget, setOptionTarget] = useState<PickTarget | null>(null)
   const [customOpen, setCustomOpen] = useState(false)
   const [payOpen, setPayOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
@@ -128,6 +190,15 @@ export default function Pos() {
     [memberId],
   )
 
+  // คูปองที่ใส่ไว้กับบิลนี้ (null = หาแล้วไม่พบ, undefined = ยังโหลดอยู่)
+  const couponRow = useLiveQuery(
+    async () =>
+      couponCode ? ((await db.coupons.where('code').equals(couponCode).first()) ?? null) : null,
+    [couponCode],
+  )
+  const coupon = couponRow ?? undefined
+  const couponLoading = couponCode != null && couponRow === undefined
+
   const products = useMemo(() => (allProducts ?? []).filter((p) => p.active), [allProducts])
 
   const filtered = useMemo(() => {
@@ -136,7 +207,10 @@ export default function Pos() {
     const q = search.trim().toLowerCase()
     if (q)
       list = list.filter(
-        (p) => p.name.toLowerCase().includes(q) || (p.barcode ?? '').toLowerCase().includes(q),
+        (p) =>
+          p.name.toLowerCase().includes(q) ||
+          (p.barcode ?? '').toLowerCase().includes(q) ||
+          (p.units ?? []).some((u) => (u.barcode ?? '').toLowerCase().includes(q)),
       )
     return [...list].sort((a, b) => a.name.localeCompare(b.name, 'th'))
   }, [products, catId, search])
@@ -151,26 +225,58 @@ export default function Pos() {
         billDiscountValue,
         redeemPoints,
         memberPoints: member?.points,
+        coupon,
       }),
-    [items, promos, settings, billDiscountType, billDiscountValue, redeemPoints, member],
+    [items, promos, settings, billDiscountType, billDiscountValue, redeemPoints, member, coupon],
   )
 
-  /** หยิบสินค้า: มีตัวเลือก → เปิดโมดัล / ไม่มี → ลงตะกร้าทันที */
+  /** หยิบสินค้าจากการ์ด: ต้องเลือกหน่วย/ตัวเลือก/น้ำหนัก → เปิดโมดัล / ไม่ต้อง → ลงตะกร้าทันที */
   const pick = (p: Product) => {
-    if (p.options && p.options.length > 0) setOptionProduct(p)
+    if (needsDetail(p)) setOptionTarget({ p })
     else addProduct(p)
   }
+
+  /** หาสินค้าจากบาร์โค้ด: บาร์โค้ดหลักก่อน แล้วค่อยไล่หาบาร์โค้ดของหน่วยย่อย (แพ็ค/ลัง) */
+  const findByBarcode = (code: string): PickTarget | null => findCodeIn(products, code)
 
   /** Enter ในช่องค้นหา: บาร์โค้ดตรงเป๊ะ → หยิบลงตะกร้า + ล้างช่อง (โฟกัสค้างที่เดิม) */
   const onSearchKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter') return
+    // มีโมดัลเปิดอยู่ (เช่น เลือกตัวเลือก/ชำระเงิน) → ห้ามรับบาร์โค้ดที่ตกมาถึงช่องนี้
+    if (isModalOpen()) return
     const code = search.trim()
     if (!code) return
-    const hit = products.find((p) => p.barcode === code)
-    if (hit) {
+    const hit = findByBarcode(code)
+    if (!hit) {
+      // พิมพ์ค้นหาด้วยชื่อ → ปล่อยข้อความไว้ให้ดูผลค้นหาต่อ
+      if (!looksLikeBarcode(code)) return
+      // ยิงบาร์โค้ดที่ไม่พบ/ปิดขาย → ต้องล้างช่อง ไม่งั้นโค้ดถัดไปจะต่อท้ายกันเป็นข้อความขยะ
       e.preventDefault()
       setSearch('')
-      pick(hit)
+      const off = findCodeIn(
+        (allProducts ?? []).filter((p) => !p.active),
+        code,
+      )
+      toast.error(
+        off
+          ? `“${off.p.name}” ถูกปิดขายอยู่ — เปิดขายที่เมนูสินค้าก่อน`
+          : `ไม่พบสินค้าของบาร์โค้ด “${code}” — ตรวจบาร์โค้ดอีกครั้ง หรือเพิ่มสินค้าที่เมนูสินค้า`,
+      )
+      return
+    }
+    e.preventDefault()
+    setSearch('')
+    const { p, unit } = hit
+    if ((p.options?.length ?? 0) > 0) {
+      // มีตัวเลือก → เปิดโมดัล (ล็อกหน่วยที่ยิงมา ถ้ายิงบาร์โค้ดหน่วยย่อย)
+      setOptionTarget({ p, unit })
+    } else if (unit) {
+      addProduct(p, { unit })
+    } else if (p.allowDecimalQty) {
+      // สินค้าชั่งน้ำหนัก → ต้องกรอกน้ำหนักก่อน
+      setOptionTarget({ p })
+    } else {
+      addProduct(p)
     }
   }
 
@@ -178,6 +284,10 @@ export default function Pos() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'F9') {
+        // มีโมดัลเปิดอยู่ → ปล่อยให้โมดัลนั้นทำงานต่อ ห้ามเปิดโมดัลชำระเงินซ้อนทับ
+        if (isModalOpen()) return
+        // หน้าจอถูกล็อกอยู่ (ฉากล็อกทับอยู่ด้านหน้า) — คีย์ลัดต้องไม่ทำงาน
+        if (useAuth.getState().locked) return
         e.preventDefault()
         if (useCart.getState().items.length > 0) setPayOpen(true)
       }
@@ -197,6 +307,17 @@ export default function Pos() {
     <div className="flex h-full">
       {/* ===== ฝั่งซ้าย: เลือกสินค้า ===== */}
       <section className="flex min-w-0 flex-1 flex-col gap-3 bg-slate-100 p-4">
+        {/* เตือนเมื่อตั้งค่าให้ต้องเปิดกะก่อนขาย แต่ยังไม่มีกะเปิดอยู่ (finalizeSale จะปฏิเสธการปิดบิล) */}
+        {settings.shiftEnabled && settings.requireShiftToSell && !shift && !shiftLoading && (
+          <div className="flex shrink-0 items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-sm text-amber-800">
+            <Icon name="alert" size={16} className="shrink-0 text-amber-600" />
+            <span className="flex-1">ยังไม่ได้เปิดกะ — ปิดบิลไม่ได้จนกว่าจะเปิดกะ</span>
+            <Button size="sm" variant="secondary" icon="clock" onClick={() => navigate('/shift')}>
+              ไปเปิดกะ
+            </Button>
+          </div>
+        )}
+
         {/* ค้นหา + รายการกำหนดเอง */}
         <div className="flex shrink-0 items-center gap-2">
           <div className="relative flex-1">
@@ -265,17 +386,20 @@ export default function Pos() {
         settings={settings}
         totals={totals}
         member={member}
+        coupon={coupon}
+        couponLoading={couponLoading}
         onCheckout={() => {
           if (items.length > 0) setPayOpen(true)
         }}
       />
 
       {/* ===== โมดัล ===== */}
-      {optionProduct && (
+      {optionTarget && (
         <OptionModal
-          key={optionProduct.id}
-          product={optionProduct}
-          onClose={() => setOptionProduct(null)}
+          key={`${optionTarget.p.id}|${optionTarget.unit?.name ?? ''}`}
+          product={optionTarget.p}
+          lockedUnit={optionTarget.unit}
+          onClose={() => setOptionTarget(null)}
         />
       )}
       <CustomItemModal open={customOpen} onClose={() => setCustomOpen(false)} />
@@ -283,6 +407,7 @@ export default function Pos() {
         open={payOpen}
         totals={totals}
         settings={settings}
+        coupon={coupon}
         onClose={() => setPayOpen(false)}
         onDone={finishSale}
       />

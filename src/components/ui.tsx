@@ -8,6 +8,7 @@ import {
   type TextareaHTMLAttributes,
 } from 'react'
 import { create } from 'zustand'
+import { useAuth } from '../stores/authStore'
 
 /* =========================================================
    ไอคอน (เส้น stroke สไตล์ lucide)
@@ -46,6 +47,19 @@ const ICON_PATHS = {
   eye: 'M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
   refresh: 'M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8 M3 3v5h5',
   wallet: 'M21 12V7H5a2 2 0 0 1 0-4h14v4 M3 5v14a2 2 0 0 0 2 2h16v-5 M18 12a2 2 0 0 0 0 4h4v-4z',
+  truck: 'M1 3h15v13H1z M16 8h4l3 3v5h-7V8 M5.5 18.5a2 2 0 1 1-4 0 2 2 0 0 1 4 0 M20.5 18.5a2 2 0 1 1-4 0 2 2 0 0 1 4 0',
+  clipboard:
+    'M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2 M9 2h6v4H9z M9 12l2 2 4-4',
+  ticket:
+    'M3 9V6a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v3a3 3 0 0 0 0 6v3a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-3a3 3 0 0 0 0-6 M13 5v14',
+  undo: 'M3 7v6h6 M3.51 13a9 9 0 1 0 2.13-9.36L3 7',
+  lock: 'M5 11h14v10H5z M8 11V7a4 4 0 0 1 8 0v4 M12 15v2',
+  unlock: 'M5 11h14v10H5z M8 11V7a4 4 0 0 1 7.6-1.6 M12 15v2',
+  shield: 'M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5z M9 12l2 2 4-4',
+  invoice:
+    'M4 3h16v18l-3-2-2 2-2-2-2 2-2-2-3 2z M8 7h8 M8 11h8 M8 15h5',
+  logout: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4 M16 17l5-5-5-5 M21 12H9',
+  backspace: 'M21 5H8l-6 7 6 7h13a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1z M17 9l-6 6 M11 9l6 6',
 } as const
 
 export type IconName = keyof typeof ICON_PATHS
@@ -214,6 +228,12 @@ const MODAL_SIZES = {
 /** สแต็กโมดัลที่เปิดอยู่ — ให้ Esc ปิดเฉพาะตัวบนสุดเมื่อมีโมดัลซ้อนกัน */
 const modalStack: symbol[] = []
 
+/**
+ * มีโมดัลเปิดอยู่หรือไม่ — ให้คีย์ลัด/ช่องยิงบาร์โค้ดของหน้าจอด้านหลังหยุดรับคีย์
+ * (กันเคสยิงบาร์โค้ดต่อเนื่องแล้วคีย์ตกไปที่หน้าหลังโมดัล)
+ */
+export const isModalOpen = () => modalStack.length > 0
+
 export function Modal({
   open,
   onClose,
@@ -231,12 +251,19 @@ export function Modal({
 }) {
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
+  const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
     const id = Symbol('modal')
     modalStack.push(id)
+    // ดึงโฟกัสเข้าโมดัลถ้าไม่มีช่องไหนถูกโฟกัสไว้ (autoFocus) — กันคีย์/บาร์โค้ดที่ยิงต่อเนื่อง
+    // ตกลงไปที่ช่องค้นหาของหน้าจอด้านหลัง แล้วสั่งงานหน้านั้นโดยไม่ตั้งใจ
+    const panel = panelRef.current
+    if (panel && !panel.contains(document.activeElement)) panel.focus()
     const onKey = (e: KeyboardEvent) => {
+      // หน้าจอถูกล็อกอยู่ (ฉากล็อกทับด้านหน้า) — คีย์ต้องไม่ทะลุไปสั่งงานโมดัลที่ค้างอยู่ข้างหลัง
+      if (useAuth.getState().locked) return
       if (e.key === 'Escape' && modalStack[modalStack.length - 1] === id) onCloseRef.current()
     }
     window.addEventListener('keydown', onKey)
@@ -252,7 +279,11 @@ export function Modal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div
-        className={`relative flex max-h-[92vh] w-full flex-col rounded-2xl bg-white shadow-2xl ${MODAL_SIZES[size]}`}
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal
+        className={`relative flex max-h-[92vh] w-full flex-col rounded-2xl bg-white shadow-2xl outline-none ${MODAL_SIZES[size]}`}
       >
         {title != null && (
           <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">

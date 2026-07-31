@@ -1,0 +1,55 @@
+name: Deploy to GitHub Pages
+
+# push ขึ้น main เมื่อไหร่ = เว็บอัปเดตตามอัตโนมัติ (กดรันเองจากแท็บ Actions ก็ได้)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# ปล่อยให้ deploy ทีละรอบ ไม่ให้ทับกัน
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      # GitHub Pages เสิร์ฟที่ https://<user>.github.io/<repo>/ จึงต้องบอก base ตอน build
+      - run: npm run build
+        env:
+          DEPLOY_BASE: /DUYPOS/
+
+      # GitHub Pages ตั้ง rewrite เองไม่ได้ — ใช้ 404.html เป็นตัวรับทุก URL แทน
+      # (เปิด /DUYPOS/pos ตรงๆ หรือกดรีเฟรชกลางแอปจะได้แอปเหมือนเดิม ไม่ใช่หน้า 404)
+      - run: cp dist/index.html dist/404.html
+
+      # กัน GitHub Pages ประมวลผลไฟล์ด้วย Jekyll (จะทิ้งไฟล์/โฟลเดอร์ที่ขึ้นต้นด้วย _)
+      - run: touch dist/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

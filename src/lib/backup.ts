@@ -11,6 +11,12 @@ const TABLES = [
   'stockMoves',
   'heldBills',
   'expenses',
+  'coupons',
+  'goodsReceipts',
+  'stockCounts',
+  'staff',
+  'shifts',
+  'taxInvoices',
 ] as const
 
 interface BackupFile {
@@ -45,6 +51,8 @@ export async function importBackup(file: File): Promise<void> {
   }
   await db.transaction('rw', db.tables, async () => {
     for (const t of TABLES) {
+      // ไฟล์สำรองรุ่นเก่าอาจไม่มีตารางใหม่ — เก็บข้อมูลเดิมไว้ ไม่ล้างทิ้งเปล่าๆ
+      if (!(t in payload.data)) continue
       await db.table(t).clear()
       const rows = payload.data[t]
       if (Array.isArray(rows) && rows.length) await db.table(t).bulkAdd(rows)
@@ -52,11 +60,14 @@ export async function importBackup(file: File): Promise<void> {
   })
 }
 
-/** ล้างข้อมูลทั้งหมด (คงการตั้งค่าไว้) */
+/**
+ * ล้างข้อมูลทั้งหมด — keepSettings คงการตั้งค่า "และรายชื่อพนักงาน" ไว้
+ * (ถ้าล้างพนักงานทิ้งขณะเปิดระบบพนักงานอยู่ จะเข้าระบบไม่ได้เลย)
+ */
 export async function clearAllData(keepSettings: boolean) {
   await db.transaction('rw', db.tables, async () => {
     for (const t of TABLES) {
-      if (keepSettings && t === 'settings') continue
+      if (keepSettings && (t === 'settings' || t === 'staff')) continue
       await db.table(t).clear()
     }
   })

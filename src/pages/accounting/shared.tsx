@@ -1,8 +1,12 @@
 import type { ComponentProps } from 'react'
-import { EXPENSE_CATEGORIES, type Expense, type Sale } from '../../db/types'
+import { EXPENSE_CATEGORIES, type Expense, type PaymentMethod, type Sale } from '../../db/types'
 import type { Badge } from '../../components/ui'
 import { Icon, type IconName } from '../../components/ui'
-import { r2 } from '../../lib/format'
+import { baht, r2 } from '../../lib/format'
+import { PAY_LABEL } from '../../lib/receipt'
+import { saleCogs, saleRevenue } from '../../lib/checkout'
+
+export { saleRevenue }
 
 /* =========================================================
    ค่าคงที่ของกราฟ (พาเลตชุดเดียวกับหน้ารายงาน — ผ่าน validator CVD/contrast แล้ว)
@@ -86,29 +90,57 @@ export interface CategorySum {
   value: number
 }
 
+/** ช่องทางชำระเงินทั้งหมด (ลำดับคงที่ใช้ในทุกตาราง/กราฟ) */
+export const PAY_METHODS = ['cash', 'transfer', 'card'] as const
+
 /**
- * รายได้ของบิล (ไม่รวม VAT ที่บวกเพิ่ม) — s.total คือยอดที่ลูกค้าจ่ายจริง (payable)
- * เมื่อร้านตั้งค่า VAT แบบบวกเพิ่ม (vatIncluded=false) payable = net + vatAmount
- * จึงต้องหัก vatAmount ออกเพื่อให้ตรงกับสูตรกำไรของหน้า Reports/Dashboard
- * (Σ it.total − cost·qty − ส่วนลดระดับบิล = net − cogs)
+ * เอกสารคืนสินค้า — ยอดทุกช่องติดลบ (total / vatAmount / items[].qty,total)
+ * ดังนั้น Σ ตามปกติจะหักกลบให้เองอัตโนมัติ ห้าม Math.abs และห้ามกรองทิ้ง
+ * แต่ **ห้ามนับเป็นจำนวนบิล** ไม่งั้น "เฉลี่ยต่อบิล" จะผิด
  */
-export const saleRevenue = (s: Sale) => (s.vatIncluded ? s.total : r2(s.total - s.vatAmount))
+export const isRefundDoc = (s: Sale) => s.kind === 'refund'
+
+/** ช่องทางที่ใช้จ่ายในบิล (รองรับจ่ายผสม + บิลเก่าที่ยังไม่มี payments[]) */
+export function saleMethods(s: Sale): PaymentMethod[] {
+  const src =
+    s.payments && s.payments.length > 0 ? s.payments.map((p) => p.method) : [s.paymentMethod]
+  return PAY_METHODS.filter((m) => src.includes(m))
+}
+
+/** ป้ายช่องทางชำระของบิล เช่น "เงินสด+โอน / QR" */
+export const payMethodsLabel = (s: Sale) =>
+  saleMethods(s)
+    .map((m) => PAY_LABEL[m])
+    .join('+')
+
+/**
+ * หมวดรายจ่าย "ซื้อสินค้าเข้าสต็อก" (หน้ารับของเข้าสร้างให้อัตโนมัติ)
+ * เงินก้อนนี้คือการแปลงเงินเป็นสินค้าคงคลัง ไม่ใช่ค่าใช้จ่ายของงวด —
+ * ต้นทุนจะถูกรับรู้เป็น "ต้นทุนขาย" ตอนขายสินค้าออกไป จึงห้ามหักซ้ำในกำไรสุทธิ
+ */
+export const PURCHASE_CATEGORY: string = EXPENSE_CATEGORIES[0]
 
 export interface FinanceSummary {
-  /** รายได้ (ยอดขายสุทธิ ไม่รวม VAT ที่บวกเพิ่ม) = Σ saleRevenue(s) */
+  /** รายได้ (ยอดขายสุทธิ ไม่รวม VAT ที่บวกเพิ่ม หักเอกสารคืนสินค้าแล้ว) = Σ saleRevenue(s) */
   revenue: number
-  /** ต้นทุนขาย = Σ it.cost × it.qty */
+  /** ต้นทุนขาย = Σ it.cost × it.qty (เอกสารคืน qty ติดลบ → คืนต้นทุนกลับ) */
   cogs: number
   /** กำไรขั้นต้น = รายได้ − ต้นทุนขาย */
   gross: number
-  /** รายจ่ายรวม = Σ e.amount */
+  /** รายจ่ายรวม = Σ e.amount (เงินที่จ่ายออกจริงทั้งหมด รวมค่าซื้อสินค้าเข้าสต็อก) */
   expenseTotal: number
-  /** กำไรสุทธิ = กำไรขั้นต้น − รายจ่ายรวม */
+  /** ค่าซื้อสินค้าเข้าสต็อก (หมวด PURCHASE_CATEGORY) — ไม่หักในกำไรสุทธิ เพราะรับรู้เป็นต้นทุนขายแล้ว */
+  purchaseTotal: number
+  /** รายจ่ายดำเนินงาน = รายจ่ายรวม − ค่าซื้อสินค้าเข้าสต็อก (ตัวที่หักจากกำไรขั้นต้น) */
+  operatingExpense: number
+  /** กำไรสุทธิ = กำไรขั้นต้น − รายจ่ายดำเนินงาน */
   net: number
-  /** ภาษีขาย = Σ s.vatAmount */
+  /** ภาษีขาย = Σ s.vatAmount (เอกสารคืนติดลบ → หักกลบตามหลัก ภ.พ.30) */
   salesVat: number
-  /** จำนวนบิลที่มี VAT */
+  /** จำนวนบิลขายที่มี VAT (ไม่นับเอกสารคืนสินค้า) */
   vatBillCount: number
+  /** จำนวนเอกสารคืนสินค้าที่มี VAT */
+  vatRefundCount: number
   /** ภาษีซื้อ = Σ e.vatAmount เฉพาะรายการที่มีใบกำกับ */
   purchaseVat: number
   /** จำนวนรายการรายจ่ายที่มีใบกำกับ */
@@ -117,6 +149,14 @@ export interface FinanceSummary {
   vatDue: number
   /** รายจ่ายแยกตามหมวด (เรียงตามลำดับหมวดมาตรฐาน) */
   byCategory: CategorySum[]
+  /** จำนวนบิลขาย (ไม่นับเอกสารคืนสินค้า) */
+  billCount: number
+  /** จำนวนเอกสารคืนสินค้าในช่วง */
+  refundCount: number
+  /** ยอดคืนสินค้ารวม (ค่าบวก — ถูกหักออกจากรายได้แล้ว) */
+  refundTotal: number
+  /** ส่วนลดคูปองรวม (หักอยู่ในยอดสุทธิของบิลแล้ว — แสดงแยกให้เห็นในงบ) */
+  couponDiscount: number
 }
 
 export function calcFinance(sales: Sale[], expenses: Expense[]): FinanceSummary {
@@ -124,19 +164,38 @@ export function calcFinance(sales: Sale[], expenses: Expense[]): FinanceSummary 
   let cogs = 0
   let salesVat = 0
   let vatBillCount = 0
+  let vatRefundCount = 0
+  let billCount = 0
+  let refundCount = 0
+  let refundTotal = 0
+  let couponDiscount = 0
   for (const s of sales) {
+    // เอกสารคืนสินค้ามียอดติดลบทุกช่อง → Σ หักกลบเอง แต่ไม่นับเป็นจำนวนบิล
+    const refund = isRefundDoc(s)
+    if (refund) {
+      refundCount += 1
+      refundTotal += Math.abs(s.total)
+    } else {
+      billCount += 1
+    }
     revenue += saleRevenue(s)
     salesVat += s.vatAmount
-    if (s.vatAmount > 0) vatBillCount += 1
-    for (const it of s.items) cogs += it.cost * it.qty
+    if (s.vatAmount !== 0) {
+      if (refund) vatRefundCount += 1
+      else vatBillCount += 1
+    }
+    couponDiscount += s.couponDiscount ?? 0
+    cogs += saleCogs(s)
   }
 
   let expenseTotal = 0
+  let purchaseTotal = 0
   let purchaseVat = 0
   let vatExpenseCount = 0
   const catSums = new Map<string, number>()
   for (const e of expenses) {
     expenseTotal += e.amount
+    if (e.category === PURCHASE_CATEGORY) purchaseTotal += e.amount
     catSums.set(e.category, (catSums.get(e.category) ?? 0) + e.amount)
     if (e.hasVatInvoice) {
       purchaseVat += e.vatAmount
@@ -159,21 +218,31 @@ export function calcFinance(sales: Sale[], expenses: Expense[]): FinanceSummary 
   revenue = r2(revenue)
   cogs = r2(cogs)
   expenseTotal = r2(expenseTotal)
+  purchaseTotal = r2(purchaseTotal)
   salesVat = r2(salesVat)
   purchaseVat = r2(purchaseVat)
   const gross = r2(revenue - cogs)
+  // หักเฉพาะรายจ่ายดำเนินงาน — ค่าซื้อสินค้าเข้าสต็อกถูกหักไปแล้วในรูป "ต้นทุนขาย" (กันหักซ้ำ)
+  const operatingExpense = r2(expenseTotal - purchaseTotal)
   return {
     revenue,
     cogs,
     gross,
     expenseTotal,
-    net: r2(gross - expenseTotal),
+    purchaseTotal,
+    operatingExpense,
+    net: r2(gross - operatingExpense),
     salesVat,
     vatBillCount,
+    vatRefundCount,
     purchaseVat,
     vatExpenseCount,
     vatDue: r2(salesVat - purchaseVat),
     byCategory,
+    billCount,
+    refundCount,
+    refundTotal: r2(refundTotal),
+    couponDiscount: r2(couponDiscount),
   }
 }
 
@@ -213,6 +282,32 @@ export function StatCard({
           {sub && <div className="text-xs text-slate-400">{sub}</div>}
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * แถบแจ้งว่าช่วงเวลานี้มีเอกสารคืนสินค้า
+ * (ยอดถูกหักกลบในทุกตัวเลขของหน้าแล้ว — บอกผู้ใช้ให้เห็นชัด ไม่ให้สงสัยว่ายอดหาย)
+ */
+export function RefundBanner({
+  count,
+  total,
+  note = 'หักออกจากยอดขาย กำไร และภาษีขายในช่วงนี้แล้ว',
+}: {
+  count: number
+  total: number
+  note?: string
+}) {
+  if (count <= 0) return null
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-700">
+      <Icon name="undo" size={16} />
+      <span>
+        คืนสินค้า <span className="font-bold">{baht(count)}</span> รายการ
+      </span>
+      <span className="font-bold">(-฿{baht(total)})</span>
+      <span className="text-xs text-rose-500">· {note}</span>
     </div>
   )
 }

@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { db } from '../../db/db'
+import { usePermissions } from '../../db/hooks'
 import type { Product } from '../../db/types'
 import { Button, Field, Input, Modal, toast } from '../../components/ui'
-import { baht, r2 } from '../../lib/format'
+import { r2 } from '../../lib/format'
+import { qty3 } from './shared'
 
 type MoveKind = 'receive' | 'adjust'
 
@@ -17,12 +19,19 @@ export default function StockModal({
   const [kind, setKind] = useState<MoveKind>('receive')
   const [qty, setQty] = useState('')
   const [note, setNote] = useState('')
+  const [saving, setSaving] = useState(false)
+  /** กันกดซ้ำ/Enter ค้าง — state ยังไม่ทันอัปเดตในเฟรมเดียวกัน จึงต้องล็อกด้วย ref */
+  const savingRef = useRef(false)
+  // ดึง can ที่ระดับคอมโพเนนต์ (ห้ามเรียก hook ในฟังก์ชัน async) แล้วไปตรวจซ้ำใน save()
+  const { can } = usePermissions()
 
   useEffect(() => {
     if (product) {
       setKind('receive')
       setQty('')
       setNote('')
+      setSaving(false)
+      savingRef.current = false
     }
   }, [product])
 
@@ -33,7 +42,14 @@ export default function StockModal({
   const newStock = product && validForKind ? r2(product.stock + delta) : null
 
   const save = async () => {
-    if (product?.id == null) return
+    if (product?.id == null || savingRef.current) return
+    // กันสิทธิ์ชั้นที่สอง ณ จุดเขียนฐานข้อมูล — ปุ่มในหน้าสินค้าถูกปิดไว้แล้วก็จริง
+    // แต่โมดัลอาจเปิดค้างไว้ตั้งแต่ก่อนสิทธิ์ถูกถอน (สิทธิ์อ่านสดจากตาราง staff ตลอด)
+    // หรือถูกกดผ่าน Enter/ช่องทางอื่นในอนาคต จึงต้องตรวจตรงนี้ก่อนแตะ products/stockMoves
+    if (!can('stock')) {
+      toast.error('ไม่มีสิทธิ์ปรับสต็อก — ต้องมีสิทธิ์ “รับของเข้า / ปรับสต็อก / นับสต็อก”')
+      return
+    }
     if (!validNumber) {
       toast.error('กรุณากรอกจำนวนเป็นตัวเลข')
       return
@@ -46,17 +62,36 @@ export default function StockModal({
       toast.error('จำนวนปรับปรุงต้องไม่เป็น 0')
       return
     }
-    const stock = r2(product.stock + delta)
-    await db.products.update(product.id, { stock })
-    await db.stockMoves.add({
-      productId: product.id,
-      type: kind,
-      qty: r2(delta),
-      note: note.trim() || undefined,
-      createdAt: Date.now(),
-    })
-    toast.success(`ปรับสต็อก “${product.name}” เป็น ${baht(stock)} ${product.unit}`)
-    onClose()
+    const id = product.id
+    const name = product.name
+    const unit = product.unit
+    savingRef.current = true
+    setSaving(true)
+    try {
+      // อ่านสต็อกสดในทรานแซกชัน แล้วบวก delta — ห้ามใช้ค่าจาก snapshot ของ prop
+      // (สต็อกอาจถูกตัดจากการขายระหว่างเปิดโมดัลอยู่ และกันบันทึกความเคลื่อนไหวซ้ำ)
+      const stock = await db.transaction('rw', db.products, db.stockMoves, async () => {
+        const p = await db.products.get(id)
+        if (!p) throw new Error('ไม่พบสินค้า')
+        const next = r2(p.stock + delta)
+        await db.products.update(id, { stock: next })
+        await db.stockMoves.add({
+          productId: id,
+          type: kind,
+          qty: r2(delta),
+          note: note.trim() || undefined,
+          createdAt: Date.now(),
+        })
+        return next
+      })
+      toast.success(`ปรับสต็อก “${name}” เป็น ${qty3(stock)} ${unit}`)
+      onClose()
+    } catch {
+      toast.error('ปรับสต็อกไม่สำเร็จ ข้อมูลไม่ถูกแก้ไข กรุณาลองใหม่')
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
   }
 
   return (
@@ -67,10 +102,12 @@ export default function StockModal({
       size="sm"
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>
+          <Button variant="secondary" onClick={onClose} disabled={saving}>
             ยกเลิก
           </Button>
-          <Button onClick={save}>บันทึก</Button>
+          <Button disabled={saving} onClick={() => void save()}>
+            {saving ? 'กำลังบันทึก…' : 'บันทึก'}
+          </Button>
         </>
       }
     >
@@ -92,7 +129,7 @@ export default function StockModal({
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-slate-800">{product.name}</div>
               <div className="text-xs text-slate-500">
-                สต็อกปัจจุบัน: {baht(product.stock)} {product.unit}
+                สต็อกปัจจุบัน: {qty3(product.stock)} {product.unit}
               </div>
             </div>
           </div>
@@ -143,7 +180,7 @@ export default function StockModal({
               value={qty}
               onChange={(e) => setQty(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') void save()
+                if (e.key === 'Enter' && !e.repeat) void save()
               }}
             />
           </Field>
@@ -162,7 +199,7 @@ export default function StockModal({
                 newStock < 0 ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'
               }`}
             >
-              สต็อกใหม่: {baht(newStock)} {product.unit}
+              สต็อกใหม่: {qty3(newStock)} {product.unit}
               {newStock < 0 && ' — ติดลบ กรุณาตรวจสอบจำนวนอีกครั้ง'}
             </div>
           )}

@@ -1,15 +1,24 @@
 import { db, DEFAULT_SETTINGS } from './db'
-import type { Category, Expense, Member, Product, ProductOption, Promotion } from './types'
+import { hashPin } from '../lib/auth'
+import type {
+  Category,
+  Coupon,
+  Expense,
+  Member,
+  Product,
+  ProductOption,
+  Promotion,
+} from './types'
 
 const now = () => Date.now()
 const daysAgo = (n: number) => Date.now() - n * 86400000
 
 const CATEGORIES: Category[] = [
-  { id: 1, name: 'เครื่องดื่ม', sortOrder: 1 },
-  { id: 2, name: 'กาแฟ / ชา', sortOrder: 2 },
-  { id: 3, name: 'เบเกอรี่', sortOrder: 3 },
-  { id: 4, name: 'ขนม / อาหาร', sortOrder: 4 },
-  { id: 5, name: 'ของใช้', sortOrder: 5 },
+  { name: 'เครื่องดื่ม', sortOrder: 1 },
+  { name: 'กาแฟ / ชา', sortOrder: 2 },
+  { name: 'เบเกอรี่', sortOrder: 3 },
+  { name: 'ขนม / อาหาร', sortOrder: 4 },
+  { name: 'ของใช้', sortOrder: 5 },
 ]
 
 const DRINK_OPTIONS: ProductOption[] = [
@@ -40,69 +49,178 @@ const SHOT_OPTION: ProductOption = {
   ],
 }
 
-const PRODUCTS: Product[] = [
+/** สินค้าตัวอย่าง — categoryId อ้างตามลำดับหมวดที่สร้าง (เติมภายหลังใน seedSampleData) */
+const PRODUCTS: (Omit<Product, 'categoryId'> & { catIndex: number })[] = [
   // ----- ค้าปลีก (มีบาร์โค้ด/สต็อก) -----
-  { id: 1, name: 'น้ำดื่ม 600 มล.', barcode: '8850100100017', categoryId: 1, price: 7, cost: 4.5, unit: 'ขวด', trackStock: true, stock: 120, lowStockAt: 24, active: true, createdAt: now() },
-  { id: 2, name: 'โคล่า กระป๋อง', barcode: '8850100100024', categoryId: 1, price: 18, cost: 12, unit: 'กระป๋อง', trackStock: true, stock: 48, lowStockAt: 12, active: true, createdAt: now() },
-  { id: 3, name: 'นมจืด UHT กล่อง', barcode: '8850100100031', categoryId: 1, price: 15, cost: 11, unit: 'กล่อง', trackStock: true, stock: 36, lowStockAt: 12, active: true, createdAt: now() },
-  { id: 4, name: 'บะหมี่กึ่งสำเร็จรูป ต้มยำ', barcode: '8850100100048', categoryId: 4, price: 8, cost: 5.8, unit: 'ซอง', trackStock: true, stock: 90, lowStockAt: 24, active: true, createdAt: now() },
-  { id: 5, name: 'มันฝรั่งทอด รสดั้งเดิม', barcode: '8850100100055', categoryId: 4, price: 30, cost: 24, unit: 'ถุง', trackStock: true, stock: 40, lowStockAt: 10, active: true, createdAt: now() },
-  { id: 6, name: 'ทิชชู่เปียก 20 แผ่น', barcode: '8850100100062', categoryId: 5, price: 25, cost: 17, unit: 'ห่อ', trackStock: true, stock: 25, lowStockAt: 8, active: true, createdAt: now() },
-  { id: 7, name: 'ถ่าน AA (แพ็ค 2)', barcode: '8850100100079', categoryId: 5, price: 45, cost: 32, unit: 'แพ็ค', trackStock: true, stock: 6, lowStockAt: 10, active: true, createdAt: now() },
+  {
+    name: 'น้ำดื่ม 600 มล.',
+    barcode: '8850100100017',
+    catIndex: 0,
+    price: 7,
+    cost: 4.5,
+    unit: 'ขวด',
+    trackStock: true,
+    stock: 120,
+    lowStockAt: 24,
+    // ขายยกแพ็คได้ (ตัดสต็อก 6 ขวด) และมีราคาส่งเมื่อซื้อครบ 12 ขวด
+    units: [{ name: 'แพ็ค 6 ขวด', barcode: '8850100100116', factor: 6, price: 39 }],
+    wholesalePrice: 6,
+    wholesaleMinQty: 12,
+    active: true,
+    createdAt: now(),
+  },
+  { name: 'โคล่า กระป๋อง', barcode: '8850100100024', catIndex: 0, price: 18, cost: 12, unit: 'กระป๋อง', trackStock: true, stock: 48, lowStockAt: 12, active: true, createdAt: now() },
+  { name: 'นมจืด UHT กล่อง', barcode: '8850100100031', catIndex: 0, price: 15, cost: 11, unit: 'กล่อง', trackStock: true, stock: 36, lowStockAt: 12, active: true, createdAt: now() },
+  { name: 'บะหมี่กึ่งสำเร็จรูป ต้มยำ', barcode: '8850100100048', catIndex: 3, price: 8, cost: 5.8, unit: 'ซอง', trackStock: true, stock: 90, lowStockAt: 24, active: true, createdAt: now() },
+  { name: 'มันฝรั่งทอด รสดั้งเดิม', barcode: '8850100100055', catIndex: 3, price: 30, cost: 24, unit: 'ถุง', trackStock: true, stock: 40, lowStockAt: 10, active: true, createdAt: now() },
+  { name: 'ทิชชู่เปียก 20 แผ่น', barcode: '8850100100062', catIndex: 4, price: 25, cost: 17, unit: 'ห่อ', trackStock: true, stock: 25, lowStockAt: 8, active: true, createdAt: now() },
+  { name: 'ถ่าน AA (แพ็ค 2)', barcode: '8850100100079', catIndex: 4, price: 45, cost: 32, unit: 'แพ็ค', trackStock: true, stock: 6, lowStockAt: 10, active: true, createdAt: now() },
+  // ----- สินค้าชั่งน้ำหนัก -----
+  {
+    name: 'กล้วยหอม (ชั่งกิโล)',
+    barcode: '8850100100086',
+    catIndex: 3,
+    price: 45,
+    cost: 28,
+    unit: 'กก.',
+    trackStock: true,
+    stock: 18,
+    lowStockAt: 3,
+    allowDecimalQty: true,
+    active: true,
+    createdAt: now(),
+  },
   // ----- คาเฟ่ (มีตัวเลือก) -----
-  { id: 8, name: 'อเมริกาโน่', categoryId: 2, price: 55, cost: 18, unit: 'แก้ว', trackStock: false, stock: 0, options: [...DRINK_OPTIONS, SHOT_OPTION], active: true, createdAt: now() },
-  { id: 9, name: 'ลาเต้', categoryId: 2, price: 65, cost: 22, unit: 'แก้ว', trackStock: false, stock: 0, options: [...DRINK_OPTIONS, SHOT_OPTION], active: true, createdAt: now() },
-  { id: 10, name: 'ชาไทย', categoryId: 2, price: 50, cost: 15, unit: 'แก้ว', trackStock: false, stock: 0, options: DRINK_OPTIONS, active: true, createdAt: now() },
-  { id: 11, name: 'ชาเขียวมัทฉะ', categoryId: 2, price: 70, cost: 28, unit: 'แก้ว', trackStock: false, stock: 0, options: DRINK_OPTIONS, active: true, createdAt: now() },
-  { id: 12, name: 'โกโก้', categoryId: 2, price: 55, cost: 20, unit: 'แก้ว', trackStock: false, stock: 0, options: DRINK_OPTIONS, active: true, createdAt: now() },
-  { id: 13, name: 'ครัวซองต์เนยสด', categoryId: 3, price: 45, cost: 20, unit: 'ชิ้น', trackStock: true, stock: 12, lowStockAt: 5, active: true, createdAt: now() },
-  { id: 14, name: 'บราวนี่', categoryId: 3, price: 40, cost: 16, unit: 'ชิ้น', trackStock: true, stock: 9, lowStockAt: 4, active: true, createdAt: now() },
-  { id: 15, name: 'คุกกี้ช็อกโกแลตชิพ', categoryId: 3, price: 25, cost: 10, unit: 'ชิ้น', trackStock: true, stock: 30, lowStockAt: 10, active: true, createdAt: now() },
-]
-
-const PROMOTIONS: Promotion[] = [
-  { id: 1, name: 'ลด 10% เมื่อซื้อครบ 500.-', type: 'percent', scope: 'bill', value: 10, minSubtotal: 500, active: true },
-  { id: 2, name: 'น้ำดื่ม ซื้อ 2 แถม 1', type: 'buyxgety', scope: 'products', value: 0, buyQty: 2, freeQty: 1, productIds: [1], active: true },
-  { id: 3, name: 'เบเกอรี่ลด 5.- ต่อชิ้น', type: 'amount', scope: 'category', value: 5, categoryId: 3, active: false },
+  { name: 'อเมริกาโน่', catIndex: 1, price: 55, cost: 18, unit: 'แก้ว', trackStock: false, stock: 0, options: [...DRINK_OPTIONS, SHOT_OPTION], active: true, createdAt: now() },
+  { name: 'ลาเต้', catIndex: 1, price: 65, cost: 22, unit: 'แก้ว', trackStock: false, stock: 0, options: [...DRINK_OPTIONS, SHOT_OPTION], active: true, createdAt: now() },
+  { name: 'ชาไทย', catIndex: 1, price: 50, cost: 15, unit: 'แก้ว', trackStock: false, stock: 0, options: DRINK_OPTIONS, active: true, createdAt: now() },
+  { name: 'ชาเขียวมัทฉะ', catIndex: 1, price: 70, cost: 28, unit: 'แก้ว', trackStock: false, stock: 0, options: DRINK_OPTIONS, active: true, createdAt: now() },
+  { name: 'โกโก้', catIndex: 1, price: 55, cost: 20, unit: 'แก้ว', trackStock: false, stock: 0, options: DRINK_OPTIONS, active: true, createdAt: now() },
+  { name: 'ครัวซองต์เนยสด', catIndex: 2, price: 45, cost: 20, unit: 'ชิ้น', trackStock: true, stock: 12, lowStockAt: 5, active: true, createdAt: now() },
+  { name: 'บราวนี่', catIndex: 2, price: 40, cost: 16, unit: 'ชิ้น', trackStock: true, stock: 9, lowStockAt: 4, active: true, createdAt: now() },
+  { name: 'คุกกี้ช็อกโกแลตชิพ', catIndex: 2, price: 25, cost: 10, unit: 'ชิ้น', trackStock: true, stock: 30, lowStockAt: 10, active: true, createdAt: now() },
 ]
 
 const MEMBERS: Member[] = [
-  { id: 1, code: 'M0001', name: 'สมชาย ใจดี', phone: '0812345678', points: 120, totalSpent: 3480, visits: 12, createdAt: now() },
-  { id: 2, code: 'M0002', name: 'สมหญิง รักดี', phone: '0898765432', points: 45, totalSpent: 1150, visits: 6, createdAt: now() },
+  { code: 'M0001', name: 'สมชาย ใจดี', phone: '0812345678', points: 120, totalSpent: 3480, visits: 12, createdAt: now() },
+  { code: 'M0002', name: 'สมหญิง รักดี', phone: '0898765432', points: 45, totalSpent: 1150, visits: 6, createdAt: now() },
 ]
 
-// ไม่กำหนด id ตายตัว — ผู้ใช้เดิม (อัปเกรดจาก DB v1) อาจมีรายจ่ายจริง id 1-3 อยู่แล้ว
-// การ bulkPut ด้วย id ตายตัวจะเขียนทับข้อมูลจริงของผู้ใช้เงียบๆ
+const COUPONS: Coupon[] = [
+  { code: 'WELCOME50', name: 'ส่วนลดต้อนรับ 50 บาท', type: 'amount', value: 50, minSubtotal: 300, usageLimit: 100, usedCount: 0, active: true, createdAt: now() },
+  { code: 'SAVE10', name: 'ลด 10% สูงสุด 100 บาท', type: 'percent', value: 10, maxDiscount: 100, usedCount: 0, active: true, createdAt: now() },
+]
+
 const EXPENSES: Expense[] = [
   { date: daysAgo(2), category: 'ค่าสินค้า / วัตถุดิบ', description: 'สั่งเมล็ดกาแฟ + นม', amount: 1712, hasVatInvoice: true, vatAmount: 112, paymentMethod: 'transfer', createdAt: daysAgo(2) },
   { date: daysAgo(1), category: 'ค่าน้ำ / ค่าไฟ / เน็ต', description: 'ค่าไฟฟ้าประจำเดือน', amount: 980, hasVatInvoice: false, vatAmount: 0, paymentMethod: 'transfer', createdAt: daysAgo(1) },
   { date: daysAgo(0), category: 'ค่าอุปกรณ์ / ซ่อมบำรุง', description: 'แก้วกระดาษ + ฝา 1 ลัง', amount: 535, hasVatInvoice: true, vatAmount: 35, paymentMethod: 'cash', createdAt: daysAgo(0) },
 ]
 
-/** โหลดข้อมูลตัวอย่าง (เขียนทับรายการ id เดิมถ้ามี — รายจ่ายตัวอย่างเพิ่มเฉพาะเมื่อตารางรายจ่ายว่าง) */
-export async function seedSampleData() {
+/**
+ * โหลดข้อมูลตัวอย่าง — เพิ่มเฉพาะตารางที่ยังว่างอยู่
+ * (ห้ามเขียนทับสินค้า/สมาชิก/รายจ่ายจริงของร้านที่ใช้งานอยู่แล้ว)
+ */
+export async function seedSampleData(): Promise<{ added: string[]; skipped: string[] }> {
+  const added: string[] = []
+  const skipped: string[] = []
+
   await db.transaction(
     'rw',
-    db.categories,
-    db.products,
-    db.promotions,
-    db.members,
-    db.expenses,
+    [db.categories, db.products, db.promotions, db.members, db.coupons, db.expenses],
     async () => {
-      await db.categories.bulkPut(CATEGORIES)
-      await db.products.bulkPut(PRODUCTS)
-      await db.promotions.bulkPut(PROMOTIONS)
-      await db.members.bulkPut(MEMBERS)
-      // เพิ่มรายจ่ายตัวอย่างเฉพาะเมื่อยังไม่มีรายจ่ายเลย — ห้ามทับ/ปนกับรายจ่ายจริงของผู้ใช้
+      // ----- หมวดหมู่ + สินค้า (ผูก categoryId จากหมวดที่เพิ่ง/มีอยู่) -----
+      if ((await db.products.count()) === 0) {
+        let cats = await db.categories.toArray()
+        if (cats.length === 0) {
+          await db.categories.bulkAdd(CATEGORIES)
+          cats = await db.categories.orderBy('sortOrder').toArray()
+          added.push('หมวดหมู่')
+        }
+        const catId = (i: number) => cats[i]?.id
+        await db.products.bulkAdd(
+          PRODUCTS.map(({ catIndex, ...p }) => ({ ...p, categoryId: catId(catIndex) })),
+        )
+        added.push('สินค้า')
+      } else {
+        skipped.push('สินค้า')
+      }
+
+      // ----- โปรโมชัน (ผูกกับสินค้า/หมวดที่มีอยู่จริง) -----
+      if ((await db.promotions.count()) === 0) {
+        const water = await db.products.where('barcode').equals('8850100100017').first()
+        const bakery = (await db.categories.toArray()).find((c) => c.name === 'เบเกอรี่')
+        const promos: Promotion[] = [
+          { name: 'ลด 10% เมื่อซื้อครบ 500.-', type: 'percent', scope: 'bill', value: 10, minSubtotal: 500, active: true },
+        ]
+        if (water?.id != null) {
+          promos.push({ name: 'น้ำดื่ม ซื้อ 2 แถม 1', type: 'buyxgety', scope: 'products', value: 0, buyQty: 2, freeQty: 1, productIds: [water.id], active: true })
+        }
+        if (bakery?.id != null) {
+          promos.push({ name: 'เบเกอรี่ลด 5.- ต่อชิ้น', type: 'amount', scope: 'category', value: 5, categoryId: bakery.id, active: false })
+        }
+        await db.promotions.bulkAdd(promos)
+        added.push('โปรโมชัน')
+      } else {
+        skipped.push('โปรโมชัน')
+      }
+
+      if ((await db.members.count()) === 0) {
+        await db.members.bulkAdd(MEMBERS)
+        added.push('สมาชิก')
+      } else {
+        skipped.push('สมาชิก')
+      }
+
+      if ((await db.coupons.count()) === 0) {
+        await db.coupons.bulkAdd(COUPONS)
+        added.push('คูปอง')
+      } else {
+        skipped.push('คูปอง')
+      }
+
       if ((await db.expenses.count()) === 0) {
         await db.expenses.bulkAdd(EXPENSES)
+        added.push('รายจ่าย')
+      } else {
+        skipped.push('รายจ่าย')
       }
     },
   )
+
+  return { added, skipped }
+}
+
+/**
+ * สร้างบัญชีเจ้าของร้านให้ 1 คนถ้ายังไม่มีพนักงานเลย (PIN เริ่มต้น 1234)
+ * เรียกทุกครั้งที่เปิดแอป เพื่อไม่ให้เปิดระบบพนักงานแล้วเข้าใช้งานไม่ได้
+ */
+export async function ensureOwnerStaff(): Promise<void> {
+  if ((await db.staff.count()) > 0) return
+  await db.staff.add({
+    code: 'E01',
+    name: 'เจ้าของร้าน',
+    role: 'owner',
+    pinHash: await hashPin('1234'),
+    active: true,
+    note: 'บัญชีเริ่มต้นของระบบ — กรุณาเปลี่ยน PIN',
+    createdAt: Date.now(),
+  })
 }
 
 /** เรียกตอนเปิดแอป — ตั้งค่าเริ่มต้น + ข้อมูลตัวอย่างในการใช้งานครั้งแรก */
 export async function initDb() {
+  // ขอให้เบราว์เซอร์กันข้อมูลไม่ให้ถูกลบอัตโนมัติเมื่อพื้นที่ตึง
+  try {
+    if (navigator.storage?.persist && !(await navigator.storage.persisted())) {
+      await navigator.storage.persist()
+    }
+  } catch {
+    // เบราว์เซอร์ไม่รองรับ — ข้ามไป (หน้าตั้งค่ามีปุ่มสำรองข้อมูลอยู่แล้ว)
+  }
+
+  await ensureOwnerStaff()
+
   const existing = await db.settings.get(1)
   if (existing) return
   await db.settings.put(DEFAULT_SETTINGS)

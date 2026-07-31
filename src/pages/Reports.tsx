@@ -16,7 +16,7 @@ import {
   YAxis,
 } from 'recharts'
 import { db } from '../db/db'
-import type { PaymentMethod } from '../db/types'
+import type { PaymentMethod, Sale } from '../db/types'
 import {
   Button,
   Card,
@@ -41,6 +41,7 @@ import {
 } from '../lib/format'
 import { downloadCsv } from '../lib/csv'
 import { PAY_LABEL } from '../lib/receipt'
+import { saleAmountByMethod, saleCogs, saleRevenue } from '../lib/checkout'
 
 /* =========================================================
    ค่าคงที่ของกราฟ (พาเลตผ่านการตรวจ CVD/contrast บนพื้นขาวแล้ว)
@@ -59,6 +60,9 @@ const PAY_COLORS: Record<PaymentMethod, string> = {
   card: '#eb6834',
 }
 
+/** ช่องทางชำระเงินตามลำดับคงที่ */
+const PAY_METHODS = ['cash', 'transfer', 'card'] as const
+
 const GRID_STROKE = '#e2e8f0' // เส้นกริด hairline (slate-200)
 const AXIS_STROKE = '#cbd5e1' // เส้นแกน (slate-300)
 const TICK = { fontSize: 12, fill: '#64748b' } // ตัวอักษรแกน (slate-500)
@@ -68,6 +72,25 @@ const COMPACT_FMT = new Intl.NumberFormat('th-TH', {
   maximumFractionDigits: 1,
 })
 const compact = (v: number) => COMPACT_FMT.format(v)
+
+/** จำนวนสินค้า — อาจเป็นทศนิยม (เช่น 0.5 กก.) ห้ามปัดทิ้ง */
+const qtyText = (n: number) => n.toLocaleString('th-TH', { maximumFractionDigits: 3 })
+
+/** เอกสารคืนสินค้า: ยอดทุกช่องติดลบ → Σ หักกลบเอง แต่ห้ามนับเป็นจำนวนบิล */
+const isRefundDoc = (s: Sale) => s.kind === 'refund'
+
+/** ช่องทางที่ใช้จ่ายในบิล (รองรับจ่ายผสม + บิลเก่าที่ยังไม่มี payments[]) */
+function saleMethods(s: Sale): PaymentMethod[] {
+  const src =
+    s.payments && s.payments.length > 0 ? s.payments.map((p) => p.method) : [s.paymentMethod]
+  return PAY_METHODS.filter((m) => src.includes(m))
+}
+
+/** ป้ายช่องทางชำระของบิล เช่น "เงินสด+โอน / QR" */
+const payMethodsLabel = (s: Sale) =>
+  saleMethods(s)
+    .map((m) => PAY_LABEL[m])
+    .join('+')
 
 /* =========================================================
    ตัวเลือกช่วงเวลา
@@ -129,7 +152,7 @@ function TopTip({ active, payload }: TipProps) {
     <div className={TIP_CLS}>
       <div className="mb-0.5 text-xs text-slate-500">{d.name}</div>
       <div className="font-semibold text-slate-800">{baht(d.value ?? 0)} บาท</div>
-      <div className="text-xs text-slate-500">{baht(d.qty ?? 0)} ชิ้น</div>
+      <div className="text-xs text-slate-500">{qtyText(d.qty ?? 0)} ชิ้น (สุทธิหลังคืนสินค้า)</div>
     </div>
   )
 }
@@ -201,10 +224,13 @@ function DonutCard({
   title,
   data,
   centerLabel,
+  note,
 }: {
   title: string
   data: ShareDatum[]
   centerLabel: string
+  /** คำอธิบายวิธีนับใต้กราฟ (เช่น การนับบิลของบิลจ่ายผสม) */
+  note?: string
 }) {
   const total = r2(data.reduce((s, d) => s + d.value, 0))
   return (
@@ -256,6 +282,7 @@ function DonutCard({
                 </div>
               )
             })}
+            {note && <p className="pt-1 text-xs text-slate-400">{note}</p>}
           </div>
         </div>
       )}
@@ -310,24 +337,36 @@ export default function Reports() {
   // ---- KPI ----
   const kpi = useMemo(() => {
     let salesTotal = 0
-    let profit = 0
+    let revenue = 0
+    let cogs = 0
+    let bills = 0
+    let refundCount = 0
+    let refundTotal = 0
+    let couponTotal = 0
     for (const s of sales ?? []) {
-      salesTotal += s.total
-      // it.total หักเฉพาะส่วนลดรายบรรทัด — ต้องหักส่วนลดระดับบิลด้วย
-      // (โปรบิล = promoDiscount รวม − โปรรายบรรทัด, ส่วนลดท้ายบิล, แลกแต้ม)
-      let linePromo = 0
-      for (const it of s.items) {
-        profit += it.total - it.cost * it.qty
-        linePromo += it.promoDiscount
+      // เอกสารคืนสินค้ามียอดติดลบทุกช่อง → Σ หักกลบเองอัตโนมัติ
+      // แต่ต้องไม่นับเป็นจำนวนบิล ไม่งั้น "เฉลี่ยต่อบิล" จะผิด
+      if (isRefundDoc(s)) {
+        refundCount += 1
+        refundTotal += Math.abs(s.total)
+      } else {
+        bills += 1
       }
-      profit -= s.promoDiscount - linePromo + s.billDiscount + s.pointDiscount
+      salesTotal += s.total
+      couponTotal += s.couponDiscount ?? 0
+      // กำไรขั้นต้น = รายได้ − ต้นทุนขาย (สูตร/ลำดับการปัดเศษเดียวกับ accounting/calcFinance)
+      // ส่วนลดทุกชนิดถูกหักอยู่ใน s.total แล้ว จึงห้ามหักย้อนกลับจาก Σ it.total อีก
+      revenue += saleRevenue(s)
+      cogs += saleCogs(s)
     }
-    const bills = sales?.length ?? 0
     return {
       salesTotal: r2(salesTotal),
-      profit: r2(profit),
+      profit: r2(r2(revenue) - r2(cogs)),
       bills,
       avg: bills > 0 ? r2(salesTotal / bills) : 0,
+      refundCount,
+      refundTotal: r2(refundTotal),
+      couponTotal: r2(couponTotal),
     }
   }, [sales])
 
@@ -349,6 +388,7 @@ export default function Reports() {
   const top = useMemo(() => {
     const m = new Map<string, { name: string; value: number; qty: number }>()
     for (const s of sales ?? []) {
+      // รวมรายการของเอกสารคืนสินค้าด้วย (qty/total ติดลบ) เพื่อให้ยอดสุทธิถูก
       for (const it of s.items) {
         const g = m.get(it.name) ?? { name: it.name, value: 0, qty: 0 }
         g.value += it.total
@@ -357,7 +397,9 @@ export default function Reports() {
       }
     }
     return [...m.values()]
-      .map((g) => ({ ...g, value: r2(g.value) }))
+      .map((g) => ({ ...g, value: r2(g.value), qty: r2(g.qty) }))
+      // สินค้าที่ถูกคืนจนยอดสุทธิ ≤ 0 ตัดออก — แท่งติดลบทำให้อ่านกราฟผิด
+      .filter((g) => g.value > 0)
       .sort((a, b) => b.value - a.value)
       .slice(0, 10)
   }, [sales])
@@ -372,6 +414,7 @@ export default function Reports() {
 
     const sums = new Map<string, number>()
     for (const s of sales ?? []) {
+      // รวมรายการของเอกสารคืนสินค้าด้วย (total ติดลบ) เพื่อให้ยอดสุทธิของหมวดถูก
       for (const it of s.items) {
         // สินค้าโดนลบ / รายการกำหนดเอง (productId = 0) / ไม่มีหมวด → "อื่นๆ"
         const cid = prodCat.get(it.productId)
@@ -379,11 +422,14 @@ export default function Reports() {
         sums.set(name, (sums.get(name) ?? 0) + it.total)
       }
     }
-    const main = [...sums.entries()]
-      .filter(([name]) => name !== 'อื่นๆ')
-      .map(([name, value]) => ({ name, value }))
+    // โดนัทวาดสัดส่วนติดลบไม่ได้ — หมวดที่ยอดสุทธิ ≤ 0 (ถูกคืนหมด) ตัดออกก่อน
+    const positive = [...sums.entries()]
+      .map(([name, value]) => ({ name, value: r2(value) }))
+      .filter((x) => x.value > 0)
+    const main = positive
+      .filter((x) => x.name !== 'อื่นๆ')
       .sort((a, b) => b.value - a.value)
-    let other = sums.get('อื่นๆ') ?? 0
+    let other = positive.find((x) => x.name === 'อื่นๆ')?.value ?? 0
     for (const x of main.slice(5)) other += x.value
 
     const out: ShareDatum[] = main.slice(0, 5).map((x, i) => ({
@@ -395,7 +441,7 @@ export default function Reports() {
     return out
   }, [sales, products, categories])
 
-  // ---- ช่องทางชำระเงิน ----
+  // ---- ช่องทางชำระเงิน (รองรับบิลจ่ายผสม) ----
   const payShare = useMemo<ShareDatum[]>(() => {
     const sums: Record<PaymentMethod, { value: number; count: number }> = {
       cash: { value: 0, count: 0 },
@@ -403,18 +449,42 @@ export default function Reports() {
       card: { value: 0, count: 0 },
     }
     for (const s of sales ?? []) {
-      sums[s.paymentMethod].value += s.total
-      sums[s.paymentMethod].count += 1
+      // ยอดต่อช่องทางจาก saleAmountByMethod: หักเงินทอนจากเงินสด รองรับบิลเก่า
+      // และเอกสารคืนสินค้า (ก้อนติดลบ) หักออกให้เองอัตโนมัติ
+      for (const k of PAY_METHODS) sums[k].value += saleAmountByMethod(s, k)
+      // จำนวนบิลนับตามก้อนที่จ่าย — บิลจ่ายผสมนับในทุกช่องทางที่ใช้, เอกสารคืนไม่นับ
+      if (!isRefundDoc(s)) for (const k of saleMethods(s)) sums[k].count += 1
     }
-    return (['cash', 'transfer', 'card'] as const)
-      .filter((k) => sums[k].count > 0)
-      .map((k) => ({
-        name: PAY_LABEL[k],
-        value: r2(sums[k].value),
-        sub: `${sums[k].count} บิล`,
-        color: PAY_COLORS[k],
+    return PAY_METHODS.map((k) => ({ k, ...sums[k] }))
+      // สัดส่วนติดลบวาดในโดนัทไม่ได้ — ช่องทางที่ยอดสุทธิ ≤ 0 ตัดออก
+      .filter((x) => r2(x.value) > 0)
+      .map((x) => ({
+        name: PAY_LABEL[x.k],
+        value: r2(x.value),
+        sub: `${x.count} บิล`,
+        color: PAY_COLORS[x.k],
       }))
   }, [sales])
+
+  // ---- ยอดขายแยกตามพนักงาน (เฉพาะเมื่อเปิดระบบพนักงาน / มีบิลที่บันทึกชื่อผู้ขายไว้) ----
+  const byStaff = useMemo(() => {
+    const m = new Map<string, { name: string; total: number; bills: number; refunds: number }>()
+    for (const s of sales ?? []) {
+      // บิลก่อนเปิดระบบพนักงานไม่มีชื่อผู้ขาย → รวมเป็น "ไม่ระบุพนักงาน"
+      const name = s.staffName?.trim() || 'ไม่ระบุพนักงาน'
+      const g = m.get(name) ?? { name, total: 0, bills: 0, refunds: 0 }
+      g.total += s.total
+      if (isRefundDoc(s)) g.refunds += 1
+      else g.bills += 1
+      m.set(name, g)
+    }
+    return [...m.values()]
+      .map((g) => ({ ...g, total: r2(g.total) }))
+      .sort((a, b) => b.total - a.total)
+  }, [sales])
+
+  /** มีบิลที่ระบุพนักงานจริงหรือไม่ — ถ้าไม่มีเลยก็ไม่ต้องโชว์การ์ดนี้ให้เกะกะ */
+  const hasStaffData = byStaff.some((g) => g.name !== 'ไม่ระบุพนักงาน')
 
   /* ---- ส่งออก CSV ---- */
 
@@ -427,16 +497,40 @@ export default function Reports() {
     }
     rows.sort((a, b) => a.createdAt - b.createdAt)
     downloadCsv(`บิล_${dayKey(lo)}_${dayKey(hi)}.csv`, [
-      ['เลขที่', 'วันที่', 'สมาชิก', 'จำนวนรายการ', 'ยอดรวม', 'ส่วนลดรวม', 'ยอดสุทธิ', 'ช่องทาง', 'สถานะ'],
+      [
+        'เลขที่',
+        'ประเภท',
+        'วันที่',
+        'สมาชิก',
+        'จำนวนรายการ',
+        'ยอดรวม',
+        'ส่วนลดรวม',
+        'ส่วนลดคูปอง',
+        'โค้ดคูปอง',
+        'ยอดสุทธิ',
+        'ช่องทาง',
+        'อ้างอิงบิล',
+        'สถานะ',
+      ],
       ...rows.map((s) => [
         s.receiptNo,
+        isRefundDoc(s) ? 'คืนสินค้า' : 'บิลขาย',
         fmtDateTime(s.createdAt),
         s.memberName ?? '-',
         s.items.length,
         r2(s.subtotal),
-        r2(s.itemDiscount + s.promoDiscount + s.billDiscount + s.pointDiscount),
+        r2(
+          s.itemDiscount +
+            s.promoDiscount +
+            s.billDiscount +
+            (s.couponDiscount ?? 0) +
+            s.pointDiscount,
+        ),
+        r2(s.couponDiscount ?? 0),
+        s.couponCode ?? '',
         r2(s.total),
-        PAY_LABEL[s.paymentMethod],
+        payMethodsLabel(s),
+        s.refOriginalNo ?? '',
         s.status === 'completed' ? 'สำเร็จ' : 'ยกเลิก',
       ]),
     ])
@@ -450,11 +544,14 @@ export default function Reports() {
     }
     const body: (string | number)[][] = []
     for (const s of [...sales].sort((a, b) => a.createdAt - b.createdAt)) {
+      // เอกสารคืนสินค้ารวมอยู่ด้วย (จำนวน/ยอดติดลบ) → Σ ในไฟล์หักกลบเองถูกต้อง
       for (const it of s.items) {
         body.push([
           s.receiptNo,
+          isRefundDoc(s) ? 'คืนสินค้า' : 'บิลขาย',
           fmtDateTime(s.createdAt),
           it.name,
+          it.unitName ?? '',
           (it.options ?? []).join(', '),
           it.qty,
           r2(it.price),
@@ -464,7 +561,18 @@ export default function Reports() {
       }
     }
     downloadCsv(`รายการสินค้า_${dayKey(lo)}_${dayKey(hi)}.csv`, [
-      ['เลขที่บิล', 'วันที่', 'สินค้า', 'ตัวเลือก', 'จำนวน', 'ราคา/หน่วย', 'ส่วนลด', 'ยอดสุทธิ'],
+      [
+        'เลขที่บิล',
+        'ประเภท',
+        'วันที่',
+        'สินค้า',
+        'หน่วย',
+        'ตัวเลือก',
+        'จำนวน',
+        'ราคา/หน่วย',
+        'ส่วนลด',
+        'ยอดสุทธิ',
+      ],
       ...body,
     ])
     toast.success(`ส่งออกรายการสินค้า ${body.length} รายการแล้ว`)
@@ -543,12 +651,38 @@ export default function Reports() {
         </Card>
       ) : (
         <div className="space-y-4">
+          {/* ===== แถบสรุปคืนสินค้า / คูปอง (แสดงเมื่อมีจริงในช่วงนั้น) ===== */}
+          {(kpi.refundCount > 0 || kpi.couponTotal !== 0) && (
+            <div className="flex flex-wrap gap-3">
+              {kpi.refundCount > 0 && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-700">
+                  <Icon name="undo" size={16} />
+                  <span>
+                    คืนสินค้า <span className="font-bold">{baht(kpi.refundCount)}</span> รายการ
+                  </span>
+                  <span className="font-bold">(-฿{baht(kpi.refundTotal)})</span>
+                  <span className="text-xs text-rose-500">
+                    · หักออกจากยอดขาย กำไร และทุกกราฟในหน้านี้แล้ว (ไม่นับเป็นจำนวนบิล)
+                  </span>
+                </div>
+              )}
+              {kpi.couponTotal !== 0 && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm text-violet-700">
+                  <Icon name="ticket" size={16} />
+                  <span>ส่วนลดคูปอง</span>
+                  <span className="font-bold">฿{baht(kpi.couponTotal)}</span>
+                  <span className="text-xs text-violet-500">· หักจากกำไรขั้นต้นแล้ว</span>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ===== KPI 4 ใบ ===== */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard
               icon="cash"
               tone="bg-emerald-50 text-emerald-600"
-              label="ยอดขาย"
+              label={kpi.refundCount > 0 ? 'ยอดขายสุทธิ' : 'ยอดขาย'}
               value={baht(kpi.salesTotal)}
               unit="บาท"
             />
@@ -567,6 +701,7 @@ export default function Reports() {
               value={baht(kpi.bills)}
               unit="บิล"
             />
+            {/* หมายเหตุ: จำนวนบิลไม่นับเอกสารคืนสินค้า จึงทำให้เฉลี่ยต่อบิลไม่เพี้ยน */}
             <StatCard
               icon="cart"
               tone="bg-amber-50 text-amber-600"
@@ -639,7 +774,9 @@ export default function Reports() {
           </Card>
 
           {/* ===== สินค้าขายดี Top 10 ===== */}
-          <Card title="สินค้าขายดี 10 อันดับ (ตามยอดขาย)">
+          <Card
+            title={`สินค้าขายดี 10 อันดับ (ตามยอดขาย${kpi.refundCount > 0 ? 'สุทธิ' : ''})`}
+          >
             {top.length === 0 ? (
               <EmptyState icon="box" title="ไม่มีข้อมูลสินค้า" />
             ) : (
@@ -674,7 +811,7 @@ export default function Reports() {
                         position="right"
                         fill="#64748b"
                         fontSize={11}
-                        formatter={(v: unknown) => `${String(v)} ชิ้น`}
+                        formatter={(v: unknown) => `${qtyText(Number(v ?? 0))} ชิ้น`}
                       />
                     </Bar>
                   </BarChart>
@@ -683,10 +820,66 @@ export default function Reports() {
             )}
           </Card>
 
+          {/* ===== ยอดขายแยกตามพนักงาน ===== */}
+          {hasStaffData && (
+            <Card title={`ยอดขายแยกตามพนักงาน${kpi.refundCount > 0 ? ' (สุทธิ)' : ''}`}>
+              <div className="space-y-2 text-sm">
+                {byStaff.map((g) => {
+                  const share = kpi.salesTotal > 0 ? (g.total / kpi.salesTotal) * 100 : 0
+                  return (
+                    <div key={g.name} className="flex items-center gap-3">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-xs font-bold text-emerald-700">
+                        {Array.from(g.name.trim())[0] ?? '?'}
+                      </span>
+                      <span className="w-32 shrink-0 truncate font-medium text-slate-700">
+                        {g.name}
+                      </span>
+                      <span className="hidden shrink-0 text-xs text-slate-400 sm:inline">
+                        {g.bills} บิล
+                        {g.refunds > 0 && ` · คืน ${g.refunds}`}
+                      </span>
+                      {/* แถบสัดส่วน — ยอดติดลบ (คืนมากกว่าขาย) ไม่วาดแถบ */}
+                      <span className="hidden h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-100 sm:block">
+                        <span
+                          className="block h-full rounded-full bg-emerald-500"
+                          style={{ width: `${Math.max(0, Math.min(100, share))}%` }}
+                        />
+                      </span>
+                      <span
+                        className={`ml-auto shrink-0 font-semibold ${
+                          g.total < 0 ? 'text-rose-600' : 'text-slate-800'
+                        }`}
+                      >
+                        ฿{baht(g.total)}
+                      </span>
+                      <span className="w-12 shrink-0 text-right text-xs text-slate-400">
+                        {share > 0 ? `${share.toFixed(0)}%` : '—'}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </Card>
+          )}
+
           {/* ===== สัดส่วน 2 โดนัท ===== */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <DonutCard title="สัดส่วนยอดขายตามหมวดหมู่" data={catShare} centerLabel="ยอดขายรวม" />
-            <DonutCard title="ช่องทางชำระเงิน" data={payShare} centerLabel="ยอดชำระรวม" />
+            <DonutCard
+              title="สัดส่วนยอดขายตามหมวดหมู่"
+              data={catShare}
+              centerLabel="ยอดขายรวม"
+              note={
+                kpi.refundCount > 0
+                  ? 'ยอดสุทธิหลังหักคืนสินค้าแล้ว — หมวดที่ถูกคืนจนเหลือ 0 หรือติดลบจะไม่แสดง'
+                  : undefined
+              }
+            />
+            <DonutCard
+              title="ช่องทางชำระเงิน"
+              data={payShare}
+              centerLabel="ยอดชำระรวม"
+              note="ยอดคิดตามก้อนที่จ่ายจริง (หักเงินทอนจากเงินสดและหักคืนเงินแล้ว) — บิลจ่ายผสมจะถูกนับจำนวนบิลในทุกช่องทางที่ใช้"
+            />
           </div>
         </div>
       )}

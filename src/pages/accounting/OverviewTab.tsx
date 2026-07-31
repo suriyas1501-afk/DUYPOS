@@ -18,6 +18,8 @@ import {
   INCOME_COLOR,
   TICK,
   TIP_CLS,
+  PURCHASE_CATEGORY,
+  RefundBanner,
   calcFinance,
   categoryColor,
   compact,
@@ -73,8 +75,12 @@ function PnlRow({
   big?: boolean
 }) {
   const negative = value < 0
+  // บรรทัด "หัก …" ที่ค่าติดลบ = ได้กลับคืน (เช่น เอกสารคืนสินค้าคืนต้นทุน/คูปองกลับ)
+  // แสดงเป็นเครดิตสีเขียวเพื่อไม่ให้อ่านสลับกับรายการที่หักออกจริง
   const numCls = deduct
-    ? 'text-rose-600'
+    ? negative
+      ? 'text-emerald-600'
+      : 'text-rose-600'
     : negative
       ? 'text-rose-600'
       : big
@@ -99,7 +105,9 @@ function PnlRow({
         } ${numCls}`}
       >
         {deduct
-          ? `(${money(Math.abs(value))})`
+          ? negative
+            ? `(-${money(Math.abs(value))})`
+            : `(${money(value)})`
           : negative
             ? `-${money(Math.abs(value))}`
             : money(value)}
@@ -130,6 +138,11 @@ export default function OverviewTab({
   hi: number
 }) {
   const fin = useMemo(() => calcFinance(sales ?? [], expenses ?? []), [sales, expenses])
+  /** หมวดรายจ่ายที่หักหลังกำไรขั้นต้น — ไม่รวมค่าซื้อสินค้าเข้าสต็อก (รับรู้เป็นต้นทุนขายแล้ว) */
+  const opCategories = useMemo(
+    () => fin.byCategory.filter((c) => c.name !== PURCHASE_CATEGORY),
+    [fin.byCategory],
+  )
 
   // ---- bucket รายรับ/รายจ่าย (ช่วง ≤ 31 วัน = รายวัน, ยาวกว่านั้น = รายเดือน) ----
   const dayCount = Math.round((startOfDay(hi) - startOfDay(lo)) / 86400000) + 1
@@ -196,10 +209,31 @@ export default function OverviewTab({
 
   return (
     <div className="space-y-4">
+      {/* ===== แจ้งเตือนเมื่อช่วงนี้มีเอกสารคืนสินค้า (ยอดหักกลบให้แล้ว) ===== */}
+      <RefundBanner
+        count={fin.refundCount}
+        total={fin.refundTotal}
+        note="หักออกจากรายได้ ต้นทุนขาย และกำไรในงบนี้แล้ว"
+      />
+
       {/* ===== KPI 4 ใบ ===== */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KpiCard label="รายได้" value={fin.revenue} dot={INCOME_COLOR} />
-        <KpiCard label="รายจ่าย" value={fin.expenseTotal} dot={EXPENSE_COLOR} />
+        <KpiCard
+          label="รายได้"
+          value={fin.revenue}
+          dot={INCOME_COLOR}
+          sub={fin.billCount > 0 ? `จาก ${fin.billCount.toLocaleString('th-TH')} บิล` : undefined}
+        />
+        <KpiCard
+          label="รายจ่าย"
+          value={fin.expenseTotal}
+          dot={EXPENSE_COLOR}
+          sub={
+            fin.purchaseTotal > 0
+              ? `รวมค่าซื้อสินค้าเข้าสต็อก ${baht(fin.purchaseTotal)} (ไม่หักซ้ำในกำไรสุทธิ)`
+              : undefined
+          }
+        />
         <KpiCard label="กำไรขั้นต้น" value={fin.gross} redIfNegative />
         <KpiCard label="กำไรสุทธิ" value={fin.net} redIfNegative emphasize />
       </div>
@@ -268,16 +302,40 @@ export default function OverviewTab({
         {/* ===== งบกำไรขาดทุน ===== */}
         <Card title="งบกำไรขาดทุน">
           <div className="text-sm">
-            <PnlRow label="รายได้จากการขาย" value={fin.revenue} />
+            {fin.couponDiscount !== 0 ? (
+              /* มีการใช้คูปองในช่วงนี้ — แยกให้เห็นว่าส่วนลดคูปองหักจากยอดขายไปเท่าไร */
+              <>
+                <PnlRow label="ยอดขายก่อนหักคูปอง" value={r2(fin.revenue + fin.couponDiscount)} />
+                <PnlRow label="หัก ส่วนลดคูปอง" value={fin.couponDiscount} deduct indent />
+                <PnlRow label="รายได้จากการขาย" value={fin.revenue} divider />
+              </>
+            ) : (
+              <PnlRow label="รายได้จากการขาย" value={fin.revenue} />
+            )}
+            {fin.refundCount > 0 && (
+              <div className="py-0.5 pl-4 text-xs text-rose-500">
+                หักคืนสินค้า {fin.refundCount.toLocaleString('th-TH')} รายการ (-
+                {money(fin.refundTotal)}) ไว้ในรายได้และต้นทุนขายแล้ว
+              </div>
+            )}
             <PnlRow label="หัก ต้นทุนขาย" value={fin.cogs} deduct />
             <PnlRow label="กำไรขั้นต้น" value={fin.gross} strong divider />
-            {fin.byCategory.map((c) => (
+            {opCategories.map((c) => (
               <PnlRow key={c.name} label={`หัก ${c.name}`} value={c.value} deduct indent />
             ))}
-            {fin.byCategory.length === 0 && (
-              <div className="py-1 pl-4 text-xs text-slate-400">— ไม่มีรายจ่ายในช่วงนี้ —</div>
+            {opCategories.length === 0 && (
+              <div className="py-1 pl-4 text-xs text-slate-400">
+                — ไม่มีรายจ่ายดำเนินงานในช่วงนี้ —
+              </div>
             )}
             <PnlRow label="กำไรสุทธิ" value={fin.net} strong divider big />
+            {fin.purchaseTotal > 0 && (
+              <div className="mt-3 rounded-xl bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-500">
+                <b className="text-slate-600">บันทึกความจำ:</b> ซื้อสินค้าเข้าสต็อกในช่วงนี้{' '}
+                {money(fin.purchaseTotal)} บาท — ไม่หักในกำไรสุทธิ เพราะต้นทุนก้อนนี้ถูกหักไปแล้วในรูป
+                “ต้นทุนขาย” ตอนขายสินค้าออกไป (หักสองรอบจะทำให้กำไรต่ำกว่าความจริง)
+              </div>
+            )}
           </div>
         </Card>
 
@@ -338,12 +396,14 @@ function KpiCard({
   label,
   value,
   dot,
+  sub,
   redIfNegative = false,
   emphasize = false,
 }: {
   label: string
   value: number
   dot?: string
+  sub?: string
   redIfNegative?: boolean
   emphasize?: boolean
 }) {
@@ -366,6 +426,7 @@ function KpiCard({
         {value < 0 ? `-${baht(Math.abs(value))}` : baht(value)}{' '}
         <span className="text-sm font-normal text-slate-400">บาท</span>
       </div>
+      {sub && <div className="text-xs text-slate-400">{sub}</div>}
     </div>
   )
 }

@@ -14,6 +14,8 @@ import {
 import { dayKey, r2 } from '../../lib/format'
 import { PAY_LABEL } from '../../lib/receipt'
 import { useSettings } from '../../db/hooks'
+import { getActor } from '../../lib/actor'
+import { getOpenShift } from '../../lib/shift'
 import { parseDay } from './shared'
 
 /** ภาษีซื้ออัตโนมัติจากยอดรวม (ราคารวม VAT แล้ว) = amount × rate / (100 + rate) */
@@ -103,10 +105,20 @@ export default function ExpenseModal({
         note: note.trim() || undefined,
       }
       if (initial?.id != null) {
+        // แก้ไข: ไม่แตะผู้บันทึก/กะเดิม (เอกสารต้องคงว่าใครบันทึกไว้ตอนแรก)
         await db.expenses.update(initial.id, data)
         toast.success('แก้ไขรายจ่ายแล้ว')
       } else {
-        await db.expenses.add({ ...data, createdAt: Date.now() })
+        // บันทึกใหม่: ผูกผู้บันทึกและกะที่เปิดอยู่ เพื่อให้เงินสดที่ควรมีในลิ้นชักของกะนั้นถูกต้อง
+        const actor = getActor()
+        const shift = await getOpenShift()
+        await db.expenses.add({
+          ...data,
+          staffId: actor.id,
+          staffName: actor.name,
+          shiftId: shift?.id,
+          createdAt: Date.now(),
+        })
         toast.success('บันทึกรายจ่ายแล้ว')
       }
       onClose()
@@ -175,7 +187,7 @@ export default function ExpenseModal({
             <div className="mt-3">
               <Field
                 label="ภาษีซื้อ (บาท)"
-                hint="คำนวณอัตโนมัติจากยอดรวม × 7/107 — แก้ไขเองได้ตามใบกำกับ"
+                hint={`คำนวณอัตโนมัติจากยอดรวม × ${vatRate}/${100 + vatRate} — แก้ไขเองได้ตามใบกำกับ`}
               >
                 <Input
                   type="number"
@@ -206,4 +218,19 @@ export default function ExpenseModal({
               >
                 {PAY_LABEL[k]}
               </button>
-            )
+            ))}
+          </div>
+        </Field>
+
+        <Field label="โน้ต">
+          <Textarea
+            rows={2}
+            placeholder="บันทึกเพิ่มเติม (ไม่บังคับ)"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </Field>
+      </div>
+    </Modal>
+  )
+}

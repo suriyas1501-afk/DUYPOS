@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
+import { usePermissions } from '../db/hooks'
 import type { Product } from '../db/types'
 import {
   Badge,
@@ -13,17 +14,32 @@ import {
   Select,
   Spinner,
   Toggle,
+  toast,
 } from '../components/ui'
-import { baht } from '../lib/format'
+import { baht, dayKey } from '../lib/format'
+import { downloadCsv } from '../lib/csv'
 import ProductModal from './products/ProductModal'
 import StockModal from './products/StockModal'
 import CategoryModal from './products/CategoryModal'
+import ImportCsvModal, {
+  PRODUCT_CSV_HEADER,
+  PRODUCT_CSV_SAMPLE,
+  productCsvRow,
+} from './products/ImportCsvModal'
+import { ProductBadges, qty3 } from './products/shared'
 
 type StatusFilter = 'all' | 'active' | 'inactive'
+
+/** ข้อความอธิบายเมื่อปุ่มที่แตะสต็อกถูกปิดไว้ (ตรงกับป้ายสิทธิ์ใน PERMISSION_LABELS.stock) */
+const STOCK_PERM_HINT = 'ต้องมีสิทธิ์ “รับของเข้า / ปรับสต็อก / นับสต็อก”'
 
 export default function Products() {
   const products = useLiveQuery(() => db.products.toArray(), [])
   const categories = useLiveQuery(() => db.categories.orderBy('sortOrder').toArray(), [])
+  // สิทธิ์ 'products' (เข้าหน้านี้ได้) ไม่ได้แปลว่าแก้สต็อกได้ — การเพิ่ม/ลดสต็อกและนำเข้า CSV
+  // เขียนทั้ง products.stock และ stockMoves จึงต้องมีสิทธิ์ 'stock' แยกอีกชั้น
+  const { can } = usePermissions()
+  const canStock = can('stock')
 
   const [search, setSearch] = useState('')
   const [catFilter, setCatFilter] = useState('all')
@@ -35,6 +51,7 @@ export default function Products() {
   })
   const [stockProduct, setStockProduct] = useState<Product | null>(null)
   const [catModalOpen, setCatModalOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
 
   const catNames = useMemo(() => {
     const m = new Map<number, string>()
@@ -57,6 +74,26 @@ export default function Products() {
       .sort((a, b) => a.name.localeCompare(b.name, 'th'))
   }, [products, search, catFilter, statusFilter])
 
+  /* ----- CSV ----- */
+  const downloadTemplate = () => {
+    downloadCsv('เทมเพลตนำเข้าสินค้า.csv', [[...PRODUCT_CSV_HEADER], ...PRODUCT_CSV_SAMPLE])
+    toast.success('ดาวน์โหลดเทมเพลต CSV แล้ว — กรอกข้อมูลแล้วนำเข้ากลับได้เลย')
+  }
+
+  const exportProducts = () => {
+    if (filtered.length === 0) {
+      toast.error('ไม่มีสินค้าที่จะส่งออก')
+      return
+    }
+    downloadCsv(`สินค้า-${dayKey(Date.now())}.csv`, [
+      [...PRODUCT_CSV_HEADER],
+      ...filtered.map((p) =>
+        productCsvRow(p, p.categoryId != null ? (catNames.get(p.categoryId) ?? '') : ''),
+      ),
+    ])
+    toast.success(`ส่งออกสินค้า ${filtered.length} รายการแล้ว`)
+  }
+
   return (
     <div className="h-full overflow-y-auto p-6">
       <PageHeader
@@ -64,6 +101,31 @@ export default function Products() {
         subtitle={products ? `ทั้งหมด ${products.length} รายการ` : undefined}
         actions={
           <>
+            <Button
+              variant="secondary"
+              icon="download"
+              title="ดาวน์โหลดไฟล์ตัวอย่างพร้อมหัวตารางที่ระบบรองรับ"
+              onClick={downloadTemplate}
+            >
+              เทมเพลต CSV
+            </Button>
+            <Button
+              variant="secondary"
+              icon="upload"
+              title={canStock ? 'เพิ่ม/แก้ไขสินค้าจำนวนมากจากไฟล์ CSV' : STOCK_PERM_HINT}
+              disabled={!canStock}
+              onClick={() => setImportOpen(true)}
+            >
+              นำเข้า CSV
+            </Button>
+            <Button
+              variant="secondary"
+              icon="download"
+              title="ส่งออกรายการสินค้าที่แสดงอยู่เป็นไฟล์ CSV"
+              onClick={exportProducts}
+            >
+              ส่งออกสินค้า CSV
+            </Button>
             <Button variant="secondary" icon="tag" onClick={() => setCatModalOpen(true)}>
               จัดการหมวดหมู่
             </Button>
@@ -121,7 +183,7 @@ export default function Products() {
           <EmptyState
             icon="box"
             title="ยังไม่มีสินค้า"
-            hint="กดปุ่ม “เพิ่มสินค้า” เพื่อเริ่มสร้างรายการสินค้าของร้าน"
+            hint="กดปุ่ม “เพิ่มสินค้า” เพื่อเริ่มสร้างรายการสินค้าของร้าน หรือ “นำเข้า CSV” ถ้ามีไฟล์อยู่แล้ว"
           />
         ) : filtered.length === 0 ? (
           <EmptyState icon="search" title="ไม่พบสินค้าตามเงื่อนไข" hint="ลองเปลี่ยนคำค้นหาหรือตัวกรอง" />
@@ -159,7 +221,10 @@ export default function Products() {
                           </div>
                         )}
                         <div className="min-w-0">
-                          <div className="truncate font-medium text-slate-800">{p.name}</div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="truncate font-medium text-slate-800">{p.name}</span>
+                            <ProductBadges p={p} />
+                          </div>
                           {p.barcode && (
                             <div className="truncate text-xs text-slate-400">{p.barcode}</div>
                           )}
@@ -172,7 +237,17 @@ export default function Products() {
                       )}
                     </td>
                     <td className="px-4 py-2.5 text-right font-semibold text-slate-800">
-                      {baht(p.price)}
+                      <div>{baht(p.price)}</div>
+                      {p.wholesalePrice != null && p.wholesaleMinQty != null && (
+                        <div className="text-xs font-normal text-emerald-600">
+                          ส่ง {baht(p.wholesalePrice)} ตั้งแต่ {qty3(p.wholesaleMinQty)} {p.unit}
+                        </div>
+                      )}
+                      {(p.units?.length ?? 0) > 0 && (
+                        <div className="text-xs font-normal text-slate-400">
+                          {p.units?.map((u) => `${u.name} ${baht(u.price)}`).join(' · ')}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-2.5 text-right text-slate-500">{baht(p.cost)}</td>
                     <td className="px-4 py-2.5 text-right">
@@ -186,7 +261,7 @@ export default function Products() {
                                 : 'text-slate-700'
                             }
                           >
-                            {baht(p.stock)}
+                            {qty3(p.stock)}
                           </span>
                           {p.stock <= 0 ? (
                             <Badge color="red">หมด</Badge>
@@ -212,8 +287,14 @@ export default function Products() {
                           variant="ghost"
                           size="sm"
                           icon="box"
-                          title={p.trackStock ? 'ปรับสต็อก' : 'สินค้านี้ไม่นับสต็อก'}
-                          disabled={!p.trackStock}
+                          title={
+                            !canStock
+                              ? STOCK_PERM_HINT
+                              : p.trackStock
+                                ? 'ปรับสต็อก'
+                                : 'สินค้านี้ไม่นับสต็อก'
+                          }
+                          disabled={!p.trackStock || !canStock}
                           onClick={() => setStockProduct(p)}
                         >
                           ปรับสต็อก
@@ -245,6 +326,12 @@ export default function Products() {
       />
       <StockModal product={stockProduct} onClose={() => setStockProduct(null)} />
       <CategoryModal open={catModalOpen} onClose={() => setCatModalOpen(false)} />
+      <ImportCsvModal
+        open={importOpen}
+        products={products ?? []}
+        categoryNames={(categories ?? []).map((c) => c.name)}
+        onClose={() => setImportOpen(false)}
+      />
     </div>
   )
 }

@@ -7,20 +7,25 @@ import { parseDay } from './accounting/shared'
 import OverviewTab from './accounting/OverviewTab'
 import ExpensesTab from './accounting/ExpensesTab'
 import TaxTab from './accounting/TaxTab'
+import TaxInvoicesTab from './accounting/TaxInvoicesTab'
 import DailyCloseTab from './accounting/DailyCloseTab'
 
 /* =========================================================
-   หน้าบัญชี — ภาพรวม / รายจ่าย / ภาษี / ปิดยอดรายวัน
+   หน้าบัญชี — ภาพรวม / รายจ่าย / ภาษี / ใบกำกับภาษี / ปิดยอดรายวัน
    ========================================================= */
 
-type TabKey = 'overview' | 'expenses' | 'tax' | 'daily'
+type TabKey = 'overview' | 'expenses' | 'tax' | 'invoices' | 'daily'
 
 const TABS: { key: TabKey; label: string; icon: IconName }[] = [
   { key: 'overview', label: 'ภาพรวม', icon: 'chart' },
   { key: 'expenses', label: 'รายจ่าย', icon: 'wallet' },
   { key: 'tax', label: 'ภาษี', icon: 'receipt' },
+  { key: 'invoices', label: 'ใบกำกับภาษี', icon: 'invoice' },
   { key: 'daily', label: 'ปิดยอดรายวัน', icon: 'cash' },
 ]
+
+/** แท็บที่ใช้ช่วงเวลา [lo, hi] ร่วมกัน (ปิดยอดรายวันเลือกวันเองในแท็บ) */
+const RANGE_TABS: TabKey[] = ['overview', 'expenses', 'tax', 'invoices']
 
 type RangeKey = 'month' | 'prevMonth' | 'd30' | 'year' | 'custom'
 
@@ -44,7 +49,11 @@ export default function Accounting() {
     const d = new Date(now)
     switch (range) {
       case 'month':
-        return { lo: new Date(d.getFullYear(), d.getMonth(), 1).getTime(), hi: endOfDay(now) }
+        // hi = สิ้นเดือน (ไม่ใช่วันนี้) — รายจ่ายลงวันที่ล่วงหน้าในเดือนเดียวกันต้องยังมองเห็น
+        return {
+          lo: new Date(d.getFullYear(), d.getMonth(), 1).getTime(),
+          hi: endOfDay(new Date(d.getFullYear(), d.getMonth() + 1, 0).getTime()),
+        }
       case 'prevMonth':
         return {
           lo: new Date(d.getFullYear(), d.getMonth() - 1, 1).getTime(),
@@ -53,7 +62,10 @@ export default function Accounting() {
       case 'd30':
         return { lo: startOfDay(addDays(now, -29)), hi: endOfDay(now) }
       case 'year':
-        return { lo: new Date(d.getFullYear(), 0, 1).getTime(), hi: endOfDay(now) }
+        return {
+          lo: new Date(d.getFullYear(), 0, 1).getTime(),
+          hi: endOfDay(new Date(d.getFullYear(), 11, 31).getTime()),
+        }
       case 'custom': {
         const f = parseDay(customFrom) ?? startOfDay(now)
         const t = parseDay(customTo) ?? startOfDay(now)
@@ -81,7 +93,7 @@ export default function Accounting() {
     <div className="h-full overflow-y-auto p-6">
       <PageHeader title="บัญชี" subtitle="งบกำไรขาดทุน รายจ่าย ภาษี และปิดยอดรายวัน" />
 
-      {/* ===== แท็บ segmented 4 แท็บ ===== */}
+      {/* ===== แท็บ segmented 5 แท็บ ===== */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="flex rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
           {TABS.map((t) => (
@@ -100,8 +112,8 @@ export default function Accounting() {
         </div>
       </div>
 
-      {/* ===== แถวเลือกช่วงเวลา (แท็บ ภาพรวม/รายจ่าย/ภาษี) ===== */}
-      {tab !== 'daily' && (
+      {/* ===== แถวเลือกช่วงเวลา (แท็บ ภาพรวม/รายจ่าย/ภาษี/ใบกำกับภาษี) ===== */}
+      {RANGE_TABS.includes(tab) && (
         <div className="mb-4 flex flex-wrap items-center gap-3">
           <div className="flex rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
             {RANGES.map((r) => (
@@ -145,6 +157,7 @@ export default function Accounting() {
       {tab === 'overview' && <OverviewTab sales={sales} expenses={expenses} lo={lo} hi={hi} />}
       {tab === 'expenses' && <ExpensesTab expenses={expenses} lo={lo} hi={hi} />}
       {tab === 'tax' && <TaxTab sales={sales} expenses={expenses} lo={lo} hi={hi} />}
+      {tab === 'invoices' && <TaxInvoicesTab lo={lo} hi={hi} />}
       {tab === 'daily' && <DailyCloseTab />}
     </div>
   )

@@ -8,6 +8,8 @@ export interface PromoLine {
   price: number // ราคาต่อหน่วย (รวมส่วนเพิ่มตัวเลือกแล้ว)
   qty: number
   manualDiscount: number // ส่วนลดที่กรอกเองต่อบรรทัด (บาท)
+  /** ตัวคูณหน่วยที่ขาย (แพ็ค/ลัง = จำนวนหน่วยฐานต่อ 1 หน่วยขาย) — ไม่ระบุ = 1 */
+  unitFactor?: number
 }
 
 export interface PromoApplied {
@@ -46,6 +48,14 @@ export function applyPromotions(
   const lineBase = (i: number) =>
     Math.max(0, r2(lines[i].price * lines[i].qty - lines[i].manualDiscount))
 
+  /** ตัวคูณหน่วยของบรรทัด (ขายยกแพ็ค/ลัง = หลายหน่วยฐาน) */
+  const factorOf = (ln: PromoLine) =>
+    ln.unitFactor != null && ln.unitFactor > 0 ? ln.unitFactor : 1
+  /** จำนวนหน่วยฐานของบรรทัด — โปร "ซื้อ X แถม Y" / "ลด N บาท/ชิ้น" ต้องนับเป็นหน่วยฐาน */
+  const baseQtyOf = (ln: PromoLine) => ln.qty * factorOf(ln)
+  /** ราคาต่อ 1 หน่วยฐานของบรรทัด (ใช้ตีมูลค่าของแถม) */
+  const basePriceOf = (ln: PromoLine) => ln.price / factorOf(ln)
+
   const matches = (p: Promotion, ln: PromoLine) => {
     if (ln.productId === 0) return false // รายการกำหนดเองไม่ร่วมโปร
     if (p.scope === 'products') return (p.productIds ?? []).includes(ln.productId)
@@ -82,15 +92,16 @@ export function applyPromotions(
           else groups.set(lines[i].productId, [i])
         }
         for (const idxs of groups.values()) {
-          const totalQty = idxs.reduce((s, i) => s + lines[i].qty, 0)
-          let freeLeft = Math.floor(totalQty / (buy + free)) * free
-          // แถมจากบรรทัดราคาต่ำสุดก่อน
-          idxs.sort((a, b) => lines[a].price - lines[b].price)
+          // นับเป็นหน่วยฐาน — ขาย 1 แพ็ค 12 = 12 ชิ้น (ไม่ใช่ 1 ชิ้น)
+          const totalBase = idxs.reduce((s, i) => s + baseQtyOf(lines[i]), 0)
+          let freeBase = Math.floor(totalBase / (buy + free)) * free
+          // แถมจากบรรทัดที่ราคาต่อหน่วยฐานต่ำสุดก่อน
+          idxs.sort((a, b) => basePriceOf(lines[a]) - basePriceOf(lines[b]))
           for (const i of idxs) {
-            if (freeLeft <= 0) break
-            const n = Math.min(freeLeft, lines[i].qty)
-            freeLeft -= n
-            addDiscount(i, n * lines[i].price)
+            if (freeBase <= 0) break
+            const n = Math.min(freeBase, baseQtyOf(lines[i]))
+            freeBase = r2(freeBase - n)
+            addDiscount(i, n * basePriceOf(lines[i]))
           }
         }
       }
@@ -98,8 +109,9 @@ export function applyPromotions(
       for (let i = 0; i < lines.length; i++) {
         const ln = lines[i]
         if (!matches(p, ln)) continue
+        // percent คิดจากมูลค่าบรรทัด จึงไม่ขึ้นกับหน่วย — amount เป็นบาท/หน่วยฐาน ต้องคูณตัวคูณหน่วย
         if (p.type === 'percent') addDiscount(i, (ln.price * ln.qty * p.value) / 100)
-        else if (p.type === 'amount') addDiscount(i, p.value * ln.qty)
+        else if (p.type === 'amount') addDiscount(i, p.value * baseQtyOf(ln))
       }
     }
 

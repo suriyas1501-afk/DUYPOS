@@ -21,7 +21,17 @@ import {
   toast,
   type IconName,
 } from '../components/ui'
-import { clearAllData, exportBackup, importBackup } from '../lib/backup'
+import {
+  BACKUP_KEEP,
+  backupFolderSupported,
+  clearAllData,
+  exportBackup,
+  getBackupFolder,
+  importBackup,
+  markBackedUp,
+  pickBackupFolder,
+  writeBackupToFolder,
+} from '../lib/backup'
 import { ensureOwnerStaff, seedSampleData } from '../db/seed'
 import { resizeImage } from '../lib/image'
 import { printKitchenSlip, printReceipt } from '../lib/receipt'
@@ -610,13 +620,72 @@ export default function Settings() {
     printKitchenSlip(buildSampleSale(merged), merged)
   }
 
+  /* ----- สำรองอัตโนมัติ -----
+     handle ของโฟลเดอร์อยู่ในตาราง appState (แปลงเป็น JSON ไม่ได้) จึงอ่านชื่อมาแสดงแยก
+     การเลือกโฟลเดอร์/ขอสิทธิ์ต้องเกิดจากการกดของผู้ใช้เท่านั้น เรียกเองตอนโหลดหน้าไม่ได้ */
+  const backupSupported = backupFolderSupported()
+  const [backupFolder, setBackupFolder] = useState<string | null>(null)
+  const [backupBusy, setBackupBusy] = useState(false)
+  /** ถามยืนยันหลังดาวน์โหลดไฟล์ (เบราว์เซอร์ที่บอกไม่ได้ว่าผู้ใช้กดยกเลิกหรือไม่) */
+  const [askSavedOpen, setAskSavedOpen] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void getBackupFolder().then((h) => {
+      if (!cancelled) setBackupFolder(h?.name ?? null)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const chooseBackupFolder = async () => {
+    if (backupBusy) return
+    setBackupBusy(true)
+    try {
+      const name = await pickBackupFolder()
+      setBackupFolder(name)
+      await db.settings.update(1, { autoBackupEnabled: true })
+      const handle = await getBackupFolder()
+      if (handle) {
+        const file = await writeBackupToFolder(handle)
+        toast.success(`เปิดสำรองอัตโนมัติแล้ว — เขียนไฟล์แรก ${file} ลงโฟลเดอร์ ${name}`)
+      }
+    } catch (e) {
+      // ผู้ใช้กดยกเลิกหน้าต่างเลือกโฟลเดอร์ = AbortError ไม่ต้องแจ้งเตือน
+      if (e instanceof DOMException && e.name === 'AbortError') return
+      toast.error(e instanceof Error ? e.message : 'เลือกโฟลเดอร์ไม่สำเร็จ')
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  const toggleAutoBackup = async (on: boolean) => {
+    if (on && !backupFolder) {
+      toast.error('เลือกโฟลเดอร์ที่จะเก็บไฟล์สำรองก่อน')
+      return
+    }
+    await db.settings.update(1, { autoBackupEnabled: on })
+    toast.success(on ? 'เปิดสำรองอัตโนมัติแล้ว' : 'ปิดสำรองอัตโนมัติแล้ว')
+  }
+
+  const setReminderDays = async (days: number) => {
+    await db.settings.update(1, { backupReminderDays: days })
+  }
+
   // ----- จัดการข้อมูล -----
 
   const doExport = async () => {
     try {
-      await exportBackup()
-      toast.success('ดาวน์โหลดไฟล์สำรองข้อมูลแล้ว')
-    } catch {
+      const how = await exportBackup()
+      if (how === 'saved') {
+        toast.success('บันทึกไฟล์สำรองข้อมูลเรียบร้อย')
+      } else {
+        // ดาวน์โหลดผ่านลิงก์: ไม่รู้ว่าผู้ใช้กดยกเลิกหรือไม่ จึงต้องให้ยืนยันก่อนนับว่าสำรองแล้ว
+        setAskSavedOpen(true)
+      }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return
       toast.error('สำรองข้อมูลไม่สำเร็จ')
     }
   }
@@ -1314,6 +1383,79 @@ export default function Settings() {
                 }
               />
               <DataRow
+                icon="shield"
+                title="สำรองอัตโนมัติลงโฟลเดอร์"
+                tone={
+                  settings.autoBackupEnabled && !backupFolder
+                    ? 'border-amber-200 bg-amber-50'
+                    : 'border-slate-200'
+                }
+                desc={
+                  !backupSupported ? (
+                    'เบราว์เซอร์นี้ยังเขียนไฟล์ลงโฟลเดอร์เองไม่ได้ (ใช้ Chrome หรือ Edge บนคอมพิวเตอร์) — ระหว่างนี้ระบบจะเตือนให้กดสำรองเองแทน'
+                  ) : (
+                    <>
+                      เลือกโฟลเดอร์ไว้ครั้งเดียว จากนั้นระบบจะเขียนไฟล์สำรองให้เองวันละครั้งตอนเปิดแอป
+                      (เก็บย้อนหลัง {BACKUP_KEEP} ไฟล์)
+                      {backupFolder && (
+                        <>
+                          {' — โฟลเดอร์ปัจจุบัน: '}
+                          <span className="font-medium text-slate-600">{backupFolder}</span>
+                        </>
+                      )}
+                      {settings.lastBackupAt && (
+                        <>
+                          {' · สำรองล่าสุด '}
+                          <span className="font-medium text-slate-600">
+                            {fmtDateTime(settings.lastBackupAt)}
+                          </span>
+                        </>
+                      )}
+                    </>
+                  )
+                }
+                action={
+                  <div className="flex flex-wrap items-center gap-2">
+                    {backupSupported && (
+                      <>
+                        <Button
+                          variant="secondary"
+                          icon="box"
+                          disabled={backupBusy}
+                          onClick={() => void chooseBackupFolder()}
+                        >
+                          {backupFolder ? 'เปลี่ยนโฟลเดอร์' : 'เลือกโฟลเดอร์'}
+                        </Button>
+                        <Toggle
+                          checked={!!settings.autoBackupEnabled}
+                          onChange={(v) => void toggleAutoBackup(v)}
+                          label="เปิดสำรองอัตโนมัติ"
+                        />
+                      </>
+                    )}
+                  </div>
+                }
+              />
+              <DataRow
+                icon="clock"
+                title="เตือนเมื่อไม่ได้สำรองนาน"
+                desc="ขึ้นแถบเตือนด้านบนของทุกหน้า พร้อมปุ่มสำรองทันที — ข้อมูลอยู่ในเครื่องนี้เท่านั้น ถ้าไม่มีไฟล์สำรองจะกู้ไม่ได้เลย"
+                action={
+                  <div className="w-44">
+                    <Select
+                      value={String(settings.backupReminderDays ?? 3)}
+                      onChange={(e) => void setReminderDays(Number(e.target.value))}
+                    >
+                      <option value="0">ไม่เตือน</option>
+                      <option value="1">ทุกวัน</option>
+                      <option value="3">ทุก 3 วัน</option>
+                      <option value="7">ทุก 7 วัน</option>
+                      <option value="14">ทุก 14 วัน</option>
+                    </Select>
+                  </div>
+                }
+              />
+              <DataRow
                 icon="upload"
                 title="นำเข้าข้อมูล"
                 desc="กู้คืนจากไฟล์สำรอง — ข้อมูลปัจจุบันทั้งหมดจะถูกแทนที่"
@@ -1404,6 +1546,18 @@ export default function Settings() {
           </>
         }
         onConfirm={() => void enableStaffSystem()}
+      />
+
+      {/* ===== ยืนยันว่าดาวน์โหลดไฟล์สำรองสำเร็จจริง ===== */}
+      <ConfirmDialog
+        open={askSavedOpen}
+        onClose={() => setAskSavedOpen(false)}
+        title="บันทึกไฟล์สำรองแล้วหรือยัง?"
+        message="ถ้ากดยกเลิกในหน้าต่างดาวน์โหลด ไฟล์สำรองจะไม่ถูกสร้าง — ยืนยันเมื่อเห็นไฟล์ในเครื่องแล้วเท่านั้น"
+        confirmLabel="บันทึกไฟล์แล้ว"
+        onConfirm={() => {
+          void markBackedUp().then(() => toast.success('บันทึกเวลาสำรองล่าสุดแล้ว'))
+        }}
       />
 
       {/* ===== ยืนยันนำเข้าข้อมูล ===== */}

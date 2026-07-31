@@ -1,10 +1,22 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { useLiveQuery } from 'dexie-react-hooks'
+import { db } from '../db/db'
 import { useCurrentShift, useOnline, usePermissions, useSettings } from '../db/hooks'
 import { useAuth } from '../stores/authStore'
 import { ROLE_LABEL } from '../lib/permissions'
+import {
+  daysSinceBackup,
+  ensureFolderPermission,
+  exportBackup,
+  getBackupFolder,
+  isBackupOverdue,
+  markBackedUp,
+  writeBackupToFolder,
+} from '../lib/backup'
+import { dayKey } from '../lib/format'
 import type { PermissionKey } from '../db/types'
-import { Icon, type IconName } from './ui'
+import { Button, ConfirmDialog, Icon, toast, type IconName } from './ui'
 
 interface NavItem {
   to: string
@@ -43,6 +55,105 @@ export function visibleNav(
     if (item.requires === 'staff' && !opts.staffEnabled) return false
     return can(item.perm)
   })
+}
+
+/**
+ * แถบเตือนให้สำรองข้อมูล — ขึ้นเมื่อไม่ได้สำรองนานเกินที่ตั้งไว้
+ * ข้อมูลอยู่ในเครื่องล้วน ถ้าเบราว์เซอร์ถูกล้างแล้วไม่มีไฟล์สำรอง = ข้อมูลหายถาวร
+ * ปุ่มในแถบนี้เป็น "การกดของผู้ใช้" จึงขอสิทธิ์เขียนโฟลเดอร์ได้ (ตอนเปิดแอปเองขอไม่ได้)
+ */
+function BackupReminder() {
+  /* อ่าน settings เองแทนรับมาทาง props เพราะ useSettings() คืน DEFAULT_SETTINGS
+     (ซึ่งไม่มี lastBackupAt) ระหว่างที่ยังอ่าน DB ไม่เสร็จ → แถบ "ยังไม่เคยสำรองเลย"
+     จะกระพริบทุกครั้งที่เปิดแอป แม้ร้านจะเพิ่งสำรองไปเมื่อวาน */
+  const settings = useLiveQuery(() => db.settings.get(1), [])
+  /* ปิดแถบ = ปิด "เฉพาะวันนี้" ไม่ใช่ปิดถาวรทั้งเซสชัน
+     เครื่องหน้าร้านเปิดค้างเป็นสัปดาห์ ถ้าปิดถาวรจะไม่เตือนอีกเลยจนกว่าจะรีเฟรช */
+  const [hiddenDay, setHiddenDay] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [askSaved, setAskSaved] = useState(false)
+
+  const today = dayKey(Date.now())
+  if (!settings || hiddenDay === today || !isBackupOverdue(settings)) {
+    // ยังต้องเรนเดอร์ไดอะล็อกยืนยันไว้ ถ้าเพิ่งกดดาวน์โหลดแล้วแถบหายไปก่อน
+    return askSaved ? (
+      <BackupSavedConfirm open onClose={() => setAskSaved(false)} />
+    ) : null
+  }
+
+  const days = daysSinceBackup(settings.lastBackupAt)
+
+  const backupNow = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      const handle = await getBackupFolder()
+      if (handle && (await ensureFolderPermission(handle, true))) {
+        const name = await writeBackupToFolder(handle)
+        toast.success(`สำรองข้อมูลลงโฟลเดอร์ ${handle.name} แล้ว (${name})`)
+        setHiddenDay(today)
+        return
+      }
+      // ไม่มีโฟลเดอร์/ไม่ได้สิทธิ์ → บันทึกเป็นไฟล์แทน
+      const how = await exportBackup()
+      if (how === 'saved') {
+        toast.success('บันทึกไฟล์สำรองเรียบร้อย')
+        setHiddenDay(today)
+      } else {
+        // ดาวน์โหลดผ่านลิงก์: ไม่รู้ว่าผู้ใช้กดยกเลิกหรือไม่ ต้องให้ยืนยันก่อนถือว่าสำรองแล้ว
+        setAskSaved(true)
+      }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return
+      toast.error('สำรองข้อมูลไม่สำเร็จ กรุณาลองใหม่ที่หน้าตั้งค่า')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
+      <Icon name="alert" size={17} className="shrink-0 text-amber-600" />
+      <span className="min-w-0 flex-1">
+        {days === Infinity
+          ? 'ยังไม่เคยสำรองข้อมูลเลย'
+          : `ไม่ได้สำรองข้อมูลมา ${days} วันแล้ว`}{' '}
+        — ข้อมูลเก็บอยู่ในเครื่องนี้เท่านั้น ถ้าเครื่องเสียหรือล้างเบราว์เซอร์จะกู้ไม่ได้
+      </span>
+      <Button size="sm" icon="download" disabled={busy} onClick={() => void backupNow()}>
+        {busy ? 'กำลังสำรอง…' : 'สำรองตอนนี้'}
+      </Button>
+      <button
+        type="button"
+        title="ซ่อนไว้ก่อน (จะเตือนอีกครั้งพรุ่งนี้)"
+        onClick={() => setHiddenDay(today)}
+        className="cursor-pointer rounded-lg p-1 text-amber-500 transition-colors hover:bg-amber-100 hover:text-amber-700"
+      >
+        <Icon name="x" size={16} />
+      </button>
+      <BackupSavedConfirm open={askSaved} onClose={() => setAskSaved(false)} />
+    </div>
+  )
+}
+
+/**
+ * ยืนยันว่าไฟล์ที่ดาวน์โหลดถูกบันทึกจริง — ใช้เฉพาะเบราว์เซอร์ที่ไม่มี showSaveFilePicker
+ * เพราะการดาวน์โหลดผ่านลิงก์ไม่มีสัญญาณกลับมาว่าผู้ใช้กด "ยกเลิก" ในหน้าต่างเลือกที่เก็บ
+ * ถ้าเหมาว่าสำเร็จ แถบเตือนจะหายทั้งที่ไม่มีไฟล์สำรองจริง
+ */
+function BackupSavedConfirm({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <ConfirmDialog
+      open={open}
+      title="บันทึกไฟล์สำรองแล้วหรือยัง?"
+      message="ถ้ากดยกเลิกในหน้าต่างดาวน์โหลด ไฟล์สำรองจะไม่ถูกสร้าง — ยืนยันเมื่อเห็นไฟล์ในเครื่องแล้วเท่านั้น"
+      confirmLabel="บันทึกไฟล์แล้ว"
+      onConfirm={() => {
+        void markBackedUp().then(() => toast.success('บันทึกเวลาสำรองล่าสุดแล้ว'))
+      }}
+      onClose={onClose}
+    />
+  )
 }
 
 export default function Layout() {
@@ -180,8 +291,11 @@ export default function Layout() {
       </aside>
 
       {/* ===== พื้นที่เนื้อหา ===== */}
-      <main className="min-w-0 flex-1 overflow-hidden">
-        <Outlet />
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <BackupReminder />
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <Outlet />
+        </div>
       </main>
     </div>
   )

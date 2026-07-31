@@ -495,4 +495,21 @@ export interface Settings {
   taxInvoiceSigner?: string
   /** ข้อความเพิ่มเติมท้ายใบกำกับภาษี */
   taxInvoiceNote?: string
+
+  /* ----- สำรองข้อมูล ----- */
+  /** สำรองอัตโนมัติลงโฟลเดอร์ที่เลือกไว้ (วันละครั้งตอนเปิดแอป) */
+  autoBackupEnabled?: boolean
+  /** เตือนเมื่อไม่ได้สำรองมากี่วัน (0 = ไม่เตือน, ค่าเริ่มต้น 3) */
+  backupReminderDays?: number
+  /** เวลาที่สำรองสำเร็จล่าสุด */
+  lastBackupAt?: number
+}
+
+/**
+ * ค่าภายในของแอปที่ไม่ใช่ข้อมูลร้าน และ "ห้าม" ใส่ลงไฟล์สำรอง
+ * (ตอนนี้ใช้เก็บ handle ของโฟลเดอร์สำรอง ซึ่งแปลงเป็น JSON ไม่ได้และผูกกับเครื่องนั้นๆ)
+ */
+export interface AppState {
+  key: string
+  value: unknown
 }

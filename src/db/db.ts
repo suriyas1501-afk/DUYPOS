@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie'
 import type {
+  AppState,
   Category,
   Coupon,
   Expense,
@@ -43,6 +44,8 @@ export const DEFAULT_SETTINGS: Settings = {
   branchTaxCode: 'สำนักงานใหญ่',
   taxInvoiceSigner: '',
   taxInvoiceNote: '',
+  autoBackupEnabled: false,
+  backupReminderDays: 3,
 }
 
 class PosDB extends Dexie {
@@ -61,6 +64,7 @@ class PosDB extends Dexie {
   staff!: Table<Staff, number>
   shifts!: Table<Shift, number>
   taxInvoices!: Table<TaxInvoice, number>
+  appState!: Table<AppState, string>
 
   constructor() {
     super('pos-db')
@@ -95,6 +99,11 @@ class PosDB extends Dexie {
       taxInvoices: '++id, &docNo, kind, saleId, issuedAt',
       sales: '++id, receiptNo, createdAt, memberId, status, kind, refOriginalId, shiftId, staffId',
       expenses: '++id, date, category, createdAt, shiftId',
+    })
+    // v5: ค่าภายในของแอป (ตอนนี้เก็บ handle โฟลเดอร์สำรองอัตโนมัติ)
+    //     ตารางนี้ไม่อยู่ในไฟล์สำรองและไม่ถูกล้างตอนล้างข้อมูล — ดู src/lib/backup.ts
+    this.version(5).stores({
+      appState: 'key',
     })
   }
 }

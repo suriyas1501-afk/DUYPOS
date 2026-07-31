@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import Layout, { visibleNav } from './components/Layout'
@@ -11,6 +11,8 @@ import { initDb } from './db/seed'
 import { useCurrentStaff, usePermissions, useSettings } from './db/hooks'
 import { useAuth } from './stores/authStore'
 import { setActor } from './lib/actor'
+import { runAutoBackup } from './lib/backup'
+import { dayKey } from './lib/format'
 import { Spinner, ToastHost, toast } from './components/ui'
 import type { PermissionKey } from './db/types'
 import Dashboard from './pages/Dashboard'
@@ -107,6 +109,39 @@ export default function App() {
   useEffect(() => {
     setActor(staff?.id != null ? { id: staff.id, name: staff.name } : {})
   }, [staff])
+
+  /* สำรองข้อมูลอัตโนมัติ
+     เครื่องขายหน้าร้านมักเปิดค้างเป็นสัปดาห์โดยไม่เคยรีเฟรช ถ้ายิงแค่ตอน mount
+     ครั้งเดียวจะได้ไฟล์สำรองแค่วันแรกวันเดียว จึงเช็คซ้ำเป็นระยะและตอนกลับมาที่แท็บ
+     runAutoBackup() อ่าน settings สดจาก DB เอง จึงไม่ต้องผูก effect กับ settings
+     (ถ้าผูก การสำรองสำเร็จจะอัปเดต lastBackupAt แล้ววนยิง effect ไม่รู้จบ) */
+  const lastAutoBackupDay = useRef('')
+  useEffect(() => {
+    if (!ready) return
+    const tick = async () => {
+      const today = dayKey(Date.now())
+      if (lastAutoBackupDay.current === today) return
+      const r = await runAutoBackup()
+      // จำวันไว้เฉพาะกรณีที่ "ไม่ต้องทำอะไรอีกแล้ววันนี้" — กรณีติดสิทธิ์/ผิดพลาดต้องลองใหม่รอบหน้า
+      if (r === 'done' || r === 'not-due' || r === 'off' || r === 'unsupported') {
+        lastAutoBackupDay.current = today
+      }
+      if (r === 'done') toast.success('สำรองข้อมูลอัตโนมัติเรียบร้อย')
+      else if (r === 'no-permission') {
+        toast.error('สำรองอัตโนมัติไม่ได้ — สิทธิ์เขียนโฟลเดอร์หมดอายุ กดสำรองเองที่หน้าตั้งค่า')
+      }
+    }
+    void tick()
+    const timer = window.setInterval(() => void tick(), 30 * 60 * 1000)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void tick()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [ready])
 
   // พนักงานถูกลบหรือถูกปิดใช้งานระหว่างเข้าใช้อยู่ → ออกจากระบบทันที
   useEffect(() => {

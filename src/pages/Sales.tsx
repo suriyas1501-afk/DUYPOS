@@ -1,12 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
-import type { Payment, PaymentMethod, Sale } from '../db/types'
+import type { OrderStatus, Payment, PaymentMethod, Sale } from '../db/types'
 import { usePermissions, useSettings } from '../db/hooks'
 import { refundableQty, voidSale } from '../lib/checkout'
+import {
+  ORDER_LABEL,
+  canSendToKitchen,
+  methodsNeedingVerify,
+  sendToKitchen,
+  verifyPayment,
+} from '../lib/quickService'
 import type { Actor } from '../lib/actor'
 import PinApprovalModal from '../components/auth/PinApprovalModal'
-import { PAY_LABEL, printReceipt } from '../lib/receipt'
+import { PAY_LABEL, printKitchenSlip, printReceipt } from '../lib/receipt'
 import { addDays, baht, fmtDateTime, r2, startOfDay } from '../lib/format'
 import RefundModal from './sales/RefundModal'
 import TaxInvoiceModal from './sales/TaxInvoiceModal'
@@ -36,6 +43,8 @@ type StatusFilter = 'all' | 'completed' | 'voided'
 type KindFilter = 'all' | 'sale' | 'refund'
 /** ตัวกรองใบกำกับภาษีเต็มรูป (แสดงเฉพาะร้านที่จด VAT) */
 type TaxFilter = 'all' | 'issued' | 'none'
+/** ตัวกรองสถานะออเดอร์ (แสดงเฉพาะร้านที่เปิดโหมดบริการด่วน) */
+type OrderFilter = 'all' | 'unsent' | 'inKitchen' | 'served'
 
 const RANGES: { key: RangeKey; label: string }[] = [
   { key: 'today', label: 'วันนี้' },
@@ -97,9 +106,32 @@ function payText(s: Sale): string {
   return seen.map((m) => PAY_LABEL[m]).join(' + ')
 }
 
+/* ----- โหมดบริการด่วน (quick service) ----- */
+
+/** สีป้ายตามสถานะออเดอร์ในครัว */
+const ORDER_BADGE_COLOR: Record<OrderStatus, 'slate' | 'blue' | 'green'> = {
+  new: 'slate',
+  preparing: 'blue',
+  ready: 'green',
+  served: 'slate',
+}
+
+/** บิลขายที่ยังไม่ถูกยกเลิกและยังไม่ได้ส่งเข้าครัว (เอกสารคืนสินค้าไม่ต้องส่ง) */
+const isUnsentOrder = (s: Sale) =>
+  s.orderStatus == null && !isRefundDoc(s) && s.status === 'completed'
+
 /* =========================================================
    ชิ้นส่วนย่อย
    ========================================================= */
+
+/** Badge สถานะออเดอร์ในครัว — ใช้เฉพาะเมื่อเปิดโหมดบริการด่วน */
+function OrderBadge({ sale }: { sale: Sale }) {
+  if (sale.orderStatus != null) {
+    return <Badge color={ORDER_BADGE_COLOR[sale.orderStatus]}>{ORDER_LABEL[sale.orderStatus]}</Badge>
+  }
+  if (!isUnsentOrder(sale)) return <span className="text-slate-300">—</span>
+  return <Badge color="amber">ยังไม่ส่งเข้าครัว</Badge>
+}
 
 /** Badge สถานะ/ประเภทเอกสาร */
 function DocBadge({ sale }: { sale: Sale }) {
@@ -220,6 +252,11 @@ function SaleDetailModal({
   const [refundOpen, setRefundOpen] = useState(false)
   const [reason, setReason] = useState('')
   const [working, setWorking] = useState(false)
+  /** กันกดปุ่ม "ส่งเข้าครัว" ซ้ำระหว่างเขียน DB */
+  const [sending, setSending] = useState(false)
+  /** ตรวจการชำระเงินย้อนหลัง (บิลโอน/บัตรที่ตอนขายเงินยังไม่เข้า) */
+  const [verifying, setVerifying] = useState(false)
+  const [verifyRef, setVerifyRef] = useState('')
   /** กันไดอะล็อกยืนยันปิดตัวเองตอนกรอกเหตุผลไม่ครบ */
   const keepConfirmOpen = useRef(false)
 
@@ -298,6 +335,54 @@ function SaleDetailModal({
   const canRefund = s != null && !isRefund && s.status === 'completed' && hasRefundable(s)
   const pays = s ? salePayments(s) : []
 
+  /* ----- โหมดบริการด่วน: สถานะออเดอร์ + ส่งเข้าครัวย้อนหลัง -----
+     ปิดโหมดอยู่ = ไม่แสดงอะไรเพิ่มเลยในหน้านี้ */
+  const quickOn = !!settings.quickServiceEnabled
+  /** null = ไม่ต้องแสดงปุ่มส่งเข้าครัว (ส่งไปแล้ว / เอกสารคืน / บิลยกเลิก / ปิดโหมด) */
+  const kitchenGate =
+    quickOn && s != null && isUnsentOrder(s) ? canSendToKitchen(s, settings) : null
+
+  /** บิลนี้ยังต้องตรวจการชำระเงินอยู่ไหม (โอน/บัตรที่ยังไม่มีใครกดยืนยัน) */
+  const needsVerifyHere =
+    quickOn &&
+    s != null &&
+    isUnsentOrder(s) &&
+    can('kitchen') &&
+    s.paymentVerifiedAt == null &&
+    methodsNeedingVerify(s).length > 0 &&
+    settings.requirePaymentVerify !== false
+
+  /** ตรวจการชำระเงินย้อนหลัง แล้วบิลจะส่งเข้าครัวได้ */
+  const doVerifyPayment = async (target: Sale) => {
+    if (target.id == null || verifying) return
+    setVerifying(true)
+    try {
+      await verifyPayment(target.id, { ref: verifyRef })
+      setVerifyRef('')
+      toast.success('บันทึกการตรวจการชำระเงินแล้ว — ส่งเข้าครัวได้')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง')
+    } finally {
+      setVerifying(false)
+    }
+  }
+
+  /** ส่งออเดอร์เข้าครัวย้อนหลัง (พนักงานเผลอกดข้ามตอนขาย) */
+  const doSendKitchen = async (target: Sale) => {
+    if (target.id == null || sending) return
+    setSending(true)
+    try {
+      const sent = await sendToKitchen(target.id)
+      toast.success('ส่งออเดอร์เข้าครัวแล้ว')
+      // พิมพ์สลิปครัวตามที่ตั้งค่าไว้ (ค่าเริ่มต้น = พิมพ์)
+      if (settings.kitchenAutoPrint !== false) printKitchenSlip(sent, settings)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'ส่งเข้าครัวไม่สำเร็จ กรุณาลองใหม่อีกครั้ง')
+    } finally {
+      setSending(false)
+    }
+  }
+
   return (
     <>
       <Modal
@@ -340,6 +425,18 @@ function SaleDetailModal({
               {canRefund && (
                 <Button variant="secondary" icon="undo" onClick={startRefund}>
                   {can('refund') ? 'คืนสินค้า' : 'คืนสินค้า (ขออนุมัติ)'}
+                </Button>
+              )}
+              {/* ---- ส่งเข้าครัวย้อนหลัง (โหมดบริการด่วน) ---- */}
+              {kitchenGate != null && can('kitchen') && (
+                <Button
+                  variant="secondary"
+                  icon="coffee"
+                  disabled={sending || !kitchenGate.ok}
+                  title={kitchenGate.ok ? undefined : kitchenGate.reason}
+                  onClick={() => void doSendKitchen(s)}
+                >
+                  {sending ? 'กำลังส่ง…' : 'ส่งเข้าครัว'}
                 </Button>
               )}
               {/* ---- ใบกำกับภาษีเต็มรูป / ใบลดหนี้ ---- */}
@@ -449,6 +546,65 @@ function SaleDetailModal({
                         </span>
                       </button>
                     ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ---- โหมดบริการด่วน: สถานะออเดอร์ + การตรวจการชำระเงิน ---- */}
+            {quickOn && !isRefund && (
+              <div className="space-y-2 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Icon name="coffee" size={16} className="text-slate-400" />
+                  <span className="text-slate-600">สถานะออเดอร์</span>
+                  <OrderBadge sale={s} />
+                  {s.orderSentAt != null && (
+                    <span className="text-xs text-slate-400">
+                      ส่งเข้าครัวเมื่อ {fmtDateTime(s.orderSentAt)}
+                    </span>
+                  )}
+                </div>
+                {s.paymentVerifiedAt != null && (
+                  <div className="text-xs text-slate-500">
+                    {s.paymentVerifiedByName?.trim() ? (
+                      <>
+                        ตรวจการชำระเงินโดย{' '}
+                        <span className="font-medium text-slate-700">
+                          {s.paymentVerifiedByName.trim()}
+                        </span>{' '}
+                        เมื่อ {fmtDateTime(s.paymentVerifiedAt)}
+                      </>
+                    ) : (
+                      <>ตรวจการชำระเงินเมื่อ {fmtDateTime(s.paymentVerifiedAt)}</>
+                    )}
+                    {s.paymentRef && <> · อ้างอิง {s.paymentRef}</>}
+                  </div>
+                )}
+                {/* ส่งเข้าครัวไม่ได้ → บอกเหตุผลให้เห็น ไม่ใช่แค่ปุ่มจาง */}
+                {kitchenGate != null && !kitchenGate.ok && (
+                  <div className="flex items-start gap-2 text-xs text-amber-700">
+                    <Icon name="alert" size={14} className="mt-0.5 shrink-0" />
+                    <span>{kitchenGate.reason}</span>
+                  </div>
+                )}
+                {/* ตรวจการชำระเงินย้อนหลัง — บิลโอน/บัตรที่ตอนขายเงินยังไม่เข้าแล้วกดข้ามไป
+                    ถ้าไม่มีปุ่มนี้ บิลนั้นจะส่งเข้าครัวไม่ได้ตลอดกาล เพราะด่านตรวจอยู่แต่ในหน้าชำระเงิน */}
+                {needsVerifyHere && (
+                  <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-2">
+                    <Input
+                      className="w-40 py-1.5 text-sm"
+                      placeholder="เลขอ้างอิง (ไม่บังคับ)"
+                      value={verifyRef}
+                      onChange={(e) => setVerifyRef(e.target.value)}
+                    />
+                    <Button
+                      size="sm"
+                      icon="check"
+                      disabled={verifying}
+                      onClick={() => void doVerifyPayment(s)}
+                    >
+                      {verifying ? 'กำลังบันทึก…' : 'ตรวจแล้ว ยอดเงินเข้าตรง'}
+                    </Button>
                   </div>
                 )}
               </div>
@@ -694,11 +850,14 @@ export default function Sales() {
   const canTax = can('taxInvoice')
   /** ร้านจด VAT → แสดงคอลัมน์/ตัวกรองใบกำกับภาษีเต็มรูป */
   const taxCol = !!settings.vatRegistered
+  /** เปิดโหมดบริการด่วน → แสดงคอลัมน์/ตัวกรองสถานะออเดอร์ */
+  const orderCol = !!settings.quickServiceEnabled
 
   const [range, setRange] = useState<RangeKey>('today')
   const [status, setStatus] = useState<StatusFilter>('all')
   const [kind, setKind] = useState<KindFilter>('all')
   const [tax, setTax] = useState<TaxFilter>('all')
+  const [order, setOrder] = useState<OrderFilter>('all')
   const [search, setSearch] = useState('')
   /** คำค้นแบบหน่วงเวลา (กันยิง query ทุกตัวอักษร) */
   const [query, setQuery] = useState('')
@@ -741,14 +900,24 @@ export default function Sales() {
       // ใบกำกับภาษี: 'issued' = มีเลขที่ใบแล้ว, 'none' = บิลที่ออกได้แต่ยังไม่ออก
       if (tax === 'issued' && !s.taxInvoiceNo) return false
       if (tax === 'none' && (s.taxInvoiceNo != null || !taxEligible(s, taxCol))) return false
+      // สถานะออเดอร์ (เฉพาะร้านที่เปิดโหมดบริการด่วน)
+      if (orderCol && order !== 'all') {
+        if (order === 'unsent' && !isUnsentOrder(s)) return false
+        if (
+          order === 'inKitchen' &&
+          !(s.orderStatus === 'new' || s.orderStatus === 'preparing' || s.orderStatus === 'ready')
+        )
+          return false
+        if (order === 'served' && s.orderStatus !== 'served') return false
+      }
       return true
     })
-  }, [sales, status, kind, tax, taxCol])
+  }, [sales, status, kind, tax, taxCol, order, orderCol])
 
   // เปลี่ยนตัวกรอง → กลับไปหน้าแรก
   useEffect(() => {
     setLimit(PAGE_SIZE)
-  }, [range, status, kind, tax, query])
+  }, [range, status, kind, tax, order, query])
 
   // ---- ชิปสรุป (เอกสารคืนยอดติดลบ จึงหักกลบยอดรวมให้เองอัตโนมัติ) ----
   const summary = useMemo(() => {
@@ -815,6 +984,16 @@ export default function Sales() {
             <option value="voided">ยกเลิก</option>
           </Select>
         </div>
+        {orderCol && (
+          <div className="w-48">
+            <Select value={order} onChange={(e) => setOrder(e.target.value as OrderFilter)}>
+              <option value="all">ออเดอร์: ทั้งหมด</option>
+              <option value="unsent">ยังไม่ส่งเข้าครัว</option>
+              <option value="inKitchen">อยู่ในครัว</option>
+              <option value="served">เสิร์ฟแล้ว</option>
+            </Select>
+          </div>
+        )}
         {taxCol && (
           <div className="w-48">
             <Select value={tax} onChange={(e) => setTax(e.target.value as TaxFilter)}>
@@ -904,6 +1083,7 @@ export default function Sales() {
                     <th className="px-4 py-3 font-medium">ช่องทาง</th>
                     <th className="px-4 py-3 text-right font-medium">ยอดสุทธิ</th>
                     <th className="px-4 py-3 text-center font-medium">สถานะ</th>
+                    {orderCol && <th className="px-4 py-3 text-center font-medium">ออเดอร์</th>}
                     {taxCol && <th className="px-4 py-3 font-medium">ใบกำกับภาษี</th>}
                     <th className="px-4 py-3" />
                   </tr>
@@ -949,6 +1129,11 @@ export default function Sales() {
                         <td className="px-4 py-2.5 text-center">
                           <DocBadge sale={s} />
                         </td>
+                        {orderCol && (
+                          <td className="px-4 py-2.5 text-center">
+                            <OrderBadge sale={s} />
+                          </td>
+                        )}
                         {taxCol && (
                           <td className="px-4 py-2.5">
                             {/* บิลที่ยกเลิกแล้ว/ไม่มี VAT ไม่ต้องแสดงปุ่ม */}

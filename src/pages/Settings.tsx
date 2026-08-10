@@ -64,6 +64,15 @@ const AUTO_LOCK_OPTIONS: { value: number; label: string }[] = [
   { value: 30, label: '30 นาที' },
 ]
 
+/** ตัวเลือกเวลาเตือนออเดอร์ค้างบนจอครัว (นาที — 0 = ไม่เตือน) */
+const KITCHEN_ALERT_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: 'ไม่เตือน' },
+  { value: 5, label: '5 นาที' },
+  { value: 10, label: '10 นาที' },
+  { value: 15, label: '15 นาที' },
+  { value: 20, label: '20 นาที' },
+]
+
 /** แยกค่า branchTaxCode ('สำนักงานใหญ่' / 'สาขาที่ 00001') เป็นตัวเลือก + เลขสาขา */
 function parseBranchTaxCode(code: string | undefined): { head: boolean; no: string } {
   const s = (code ?? '').trim()
@@ -279,6 +288,21 @@ export default function Settings() {
   const [promptpayId, setPromptpayId] = useState(settings.promptpayId ?? '')
   const [qrPreview, setQrPreview] = useState<string | null>(null)
 
+  // ----- โหมดบริการด่วน (จอครัว + ด่านตรวจการชำระเงิน) -----
+  const [quickServiceEnabled, setQuickServiceEnabled] = useState(
+    settings.quickServiceEnabled ?? false,
+  )
+  const [requirePaymentVerify, setRequirePaymentVerify] = useState(
+    settings.requirePaymentVerify ?? true,
+  )
+  const [kitchenAutoPrint, setKitchenAutoPrint] = useState(settings.kitchenAutoPrint ?? true)
+  const [kitchenAlertMinutes, setKitchenAlertMinutes] = useState(
+    String(settings.kitchenAlertMinutes ?? 10),
+  )
+  const [quickBusy, setQuickBusy] = useState(false)
+  /** ยืนยันก่อนปิดด่านตรวจสลิป (ปิดแล้วเสี่ยงทำอาหารทิ้งจากสลิปปลอม) */
+  const [verifyOffOpen, setVerifyOffOpen] = useState(false)
+
   // ----- พนักงาน & ความปลอดภัย (staffEnabled บันทึกทันทีเมื่อสลับ) -----
   const [autoLockMinutes, setAutoLockMinutes] = useState(String(settings.autoLockMinutes ?? 0))
   const [staffOnOpen, setStaffOnOpen] = useState(false)
@@ -351,6 +375,10 @@ export default function Settings() {
     setQueueEnabled(settings.queueEnabled ?? false)
     setKitchenPrintEnabled(settings.kitchenPrintEnabled ?? false)
     setPromptpayId(settings.promptpayId ?? '')
+    setQuickServiceEnabled(settings.quickServiceEnabled ?? false)
+    setRequirePaymentVerify(settings.requirePaymentVerify ?? true)
+    setKitchenAutoPrint(settings.kitchenAutoPrint ?? true)
+    setKitchenAlertMinutes(String(settings.kitchenAlertMinutes ?? 10))
     setAutoLockMinutes(String(settings.autoLockMinutes ?? 0))
     setShiftEnabled(settings.shiftEnabled ?? false)
     setRequireShiftToSell(settings.requireShiftToSell ?? false)
@@ -477,6 +505,25 @@ export default function Settings() {
     }
     await db.settings.update(1, { promptpayId: raw })
     toast.success(raw ? 'บันทึกรหัสพร้อมเพย์แล้ว' : 'ล้างรหัสพร้อมเพย์แล้ว (ปิดการสร้าง QR)')
+  }
+
+  // ----- โหมดบริการด่วน -----
+
+  const saveQuickService = async () => {
+    if (quickBusy) return
+    setQuickBusy(true)
+    try {
+      await db.settings.update(1, {
+        quickServiceEnabled,
+        // ปิดโหมดบริการด่วนแล้ว ตัวเลือกย่อยไม่มีผล — เก็บค่าเดิมไว้ให้ครบตามที่เห็นบนจอ
+        requirePaymentVerify,
+        kitchenAutoPrint,
+        kitchenAlertMinutes: toNum(kitchenAlertMinutes),
+      })
+      toast.success('บันทึกการตั้งค่าบริการด่วนแล้ว')
+    } finally {
+      setQuickBusy(false)
+    }
   }
 
   // ----- พนักงาน & ความปลอดภัย -----
@@ -974,7 +1021,115 @@ export default function Settings() {
             </div>
           </Card>
 
-          {/* ===== 5. พร้อมเพย์ (QR รับเงิน) ===== */}
+          {/* ===== 5. บริการด่วน (Quick Service) ===== */}
+          <Card title={<CardTitle icon="coffee">บริการด่วน (Quick Service)</CardTitle>}>
+            <div className="flex flex-col gap-1">
+              <Toggle
+                checked={quickServiceEnabled}
+                onChange={setQuickServiceEnabled}
+                label="เปิดใช้โหมดบริการด่วน (จอครัว / คิวออเดอร์)"
+              />
+              <span className="text-xs leading-relaxed text-slate-400">
+                เปิดแล้วจะมีเมนู "จอครัว / คิว" ให้คนชง/ครัวดูออเดอร์ และหลังชำระเงินที่หน้าขาย
+                จะเพิ่มขั้นตอน{' '}
+                <span className="font-medium text-slate-600">ตรวจการชำระเงิน → ส่งเข้าครัว</span>{' '}
+                ออเดอร์จึงจะขึ้นบนจอครัวและเดินสถานะ คิว → กำลังทำ → พร้อมเสิร์ฟ → ส่งลูกค้าแล้ว
+              </span>
+            </div>
+
+            {/* ----- ตัวเลือกย่อย: ใช้ได้เมื่อเปิดโหมดบริการด่วนแล้วเท่านั้น ----- */}
+            <div
+              className={`mt-4 grid grid-cols-1 gap-4 border-t border-slate-100 pt-4 sm:grid-cols-2 ${
+                quickServiceEnabled ? '' : 'opacity-50'
+              }`}
+            >
+              <div className="flex flex-col gap-1">
+                <div className={quickServiceEnabled ? '' : 'pointer-events-none'}>
+                  <Toggle
+                    checked={requirePaymentVerify}
+                    onChange={(v) => {
+                      if (!quickServiceEnabled) return
+                      // ปิดด่านตรวจ = ยอมให้ครัวทำอาหารก่อนเห็นเงิน ต้องยืนยันก่อนเสมอ
+                      if (v) setRequirePaymentVerify(true)
+                      else setVerifyOffOpen(true)
+                    }}
+                    label="บังคับตรวจสลิปก่อนส่งเข้าครัว (โอน / บัตร)"
+                  />
+                </div>
+                <span className="text-xs leading-relaxed text-slate-400">
+                  เงินสดไม่ต้องตรวจ เพราะเงินอยู่ในมือและทอนไปแล้ว — เฉพาะโอน/QR และบัตร
+                  ที่ต้องมีคนกดยืนยันว่าเห็นเงินเข้าจริงก่อน ครัวจึงจะได้ออเดอร์
+                </span>
+              </div>
+              <div className="flex flex-col gap-1">
+                <div className={quickServiceEnabled ? '' : 'pointer-events-none'}>
+                  <Toggle
+                    checked={kitchenAutoPrint}
+                    onChange={(v) => {
+                      if (quickServiceEnabled) setKitchenAutoPrint(v)
+                    }}
+                    label="พิมพ์สลิปครัวอัตโนมัติเมื่อกดส่งเข้าครัว"
+                  />
+                </div>
+                <span className="text-xs leading-relaxed text-slate-400">
+                  ปิดไว้ = ครัวดูออเดอร์จากหน้าจอ "จอครัว / คิว" อย่างเดียว ไม่ต้องใช้กระดาษ
+                </span>
+              </div>
+              <Field
+                label="เตือนเมื่อออเดอร์ค้างในครัวนานเกิน"
+                hint="ออเดอร์ที่ยังไม่ส่งลูกค้าและค้างเกินเวลานี้จะถูกไฮไลต์เตือนบนจอครัว"
+              >
+                <Select
+                  value={kitchenAlertMinutes}
+                  onChange={(e) => setKitchenAlertMinutes(e.target.value)}
+                  disabled={!quickServiceEnabled}
+                >
+                  {KITCHEN_ALERT_OPTIONS.map((o) => (
+                    <option key={o.value} value={String(o.value)}>
+                      {o.label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+
+            {/* ----- เตือนว่าตอนนี้ปิดด่านตรวจสลิปไว้ ----- */}
+            {quickServiceEnabled && !requirePaymentVerify && (
+              <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs leading-relaxed text-amber-800">
+                <Icon name="alert" size={16} className="mt-0.5 shrink-0" />
+                <span>
+                  ปิดการบังคับตรวจสลิปอยู่ — ออเดอร์ที่จ่ายด้วยการโอนจะส่งเข้าครัวได้ทันที
+                  โดยไม่มีใครตรวจว่าเงินเข้าจริง เสี่ยงทำอาหารทิ้งจากสลิปปลอมหรือโอนไม่สำเร็จ
+                </span>
+              </div>
+            )}
+
+            {/* ----- แนะนำให้เปิดเลขคิวคู่กัน ----- */}
+            {quickServiceEnabled && !settings.queueEnabled && (
+              <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2.5 text-xs leading-relaxed text-sky-800">
+                <Icon name="clock" size={16} className="mt-0.5 shrink-0" />
+                <span>
+                  แนะนำให้เปิด "แสดงเลขคิวบนใบเสร็จ" ที่การ์ด "ใบเสร็จ" ด้านบนด้วย —
+                  ลูกค้าจะได้รู้ว่าคิวไหนเป็นของตัวเองตอนครัวเรียกรับของ
+                </span>
+              </div>
+            )}
+
+            {!quickServiceEnabled && (
+              <p className="mt-3 text-xs leading-relaxed text-slate-400">
+                ปิดอยู่ = ขายแล้วจบที่การพิมพ์ใบเสร็จเหมือนเดิม ไม่มีเมนูจอครัวและไม่มีสถานะออเดอร์
+                (เหมาะกับร้านค้าปลีกที่ลูกค้าหยิบของแล้วจ่ายเงินกลับได้เลย)
+              </p>
+            )}
+
+            <div className="mt-5 flex justify-end">
+              <Button icon="check" disabled={quickBusy} onClick={() => void saveQuickService()}>
+                บันทึก
+              </Button>
+            </div>
+          </Card>
+
+          {/* ===== 6. พร้อมเพย์ (QR รับเงิน) ===== */}
           <Card title="พร้อมเพย์ (QR รับเงิน)">
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-[1fr_auto]">
               <div className="min-w-0">
@@ -1047,7 +1202,7 @@ export default function Settings() {
             </div>
           </Card>
 
-          {/* ===== 6. พนักงาน & ความปลอดภัย ===== */}
+          {/* ===== 7. พนักงาน & ความปลอดภัย ===== */}
           <Card title={<CardTitle icon="shield">พนักงาน &amp; ความปลอดภัย</CardTitle>}>
             <div className="flex flex-col gap-1">
               <Toggle
@@ -1123,7 +1278,7 @@ export default function Settings() {
             </div>
           </Card>
 
-          {/* ===== 7. กะ & ลิ้นชักเงินสด ===== */}
+          {/* ===== 8. กะ & ลิ้นชักเงินสด ===== */}
           <Card title={<CardTitle icon="cash">กะ &amp; ลิ้นชักเงินสด</CardTitle>}>
             {openShift && (
               <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs text-emerald-800">
@@ -1193,7 +1348,7 @@ export default function Settings() {
             </div>
           </Card>
 
-          {/* ===== 8. ใบกำกับภาษีเต็มรูป ===== */}
+          {/* ===== 9. ใบกำกับภาษีเต็มรูป ===== */}
           <Card title={<CardTitle icon="invoice">ใบกำกับภาษีเต็มรูป</CardTitle>}>
             <div className="flex flex-col gap-1">
               <Toggle
@@ -1315,7 +1470,7 @@ export default function Settings() {
             </div>
           </Card>
 
-          {/* ===== 9. ข้อมูล ===== */}
+          {/* ===== 10. ข้อมูล ===== */}
           <Card title="ข้อมูล">
             <div className="space-y-3">
               {/* ----- สถานะพื้นที่จัดเก็บของเบราว์เซอร์ ----- */}
@@ -1509,7 +1664,7 @@ export default function Settings() {
             />
           </Card>
 
-          {/* ===== 10. เกี่ยวกับระบบ ===== */}
+          {/* ===== 11. เกี่ยวกับระบบ ===== */}
           <Card title="เกี่ยวกับระบบ">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-sm leading-relaxed text-slate-500">
@@ -1521,6 +1676,27 @@ export default function Settings() {
           </Card>
         </div>
       </div>
+
+      {/* ===== ยืนยันปิดด่านตรวจสลิปก่อนส่งเข้าครัว ===== */}
+      <ConfirmDialog
+        open={verifyOffOpen}
+        onClose={() => setVerifyOffOpen(false)}
+        title="ปิดการบังคับตรวจสลิป?"
+        danger
+        confirmLabel="ปิดการบังคับตรวจสลิป"
+        message={
+          <>
+            ปิดแล้วออเดอร์ที่ลูกค้าจ่ายด้วย{' '}
+            <span className="font-semibold text-slate-800">การโอน / QR หรือบัตร</span>{' '}
+            จะถูกส่งเข้าครัวได้ทันทีโดย
+            <span className="font-semibold text-slate-800">ไม่มีใครตรวจว่าเงินเข้าจริง</span> —
+            ถ้าลูกค้าโชว์สลิปปลอมหรือโอนไม่สำเร็จ ครัวจะทำอาหารทิ้งไปแล้วและร้านรับความเสียหายเอง
+            <br />
+            เปิดกลับได้ทุกเมื่อที่การ์ดนี้ (อย่าลืมกดบันทึก)
+          </>
+        }
+        onConfirm={() => setRequirePaymentVerify(false)}
+      />
 
       {/* ===== ยืนยันเปิดระบบพนักงาน ===== */}
       <ConfirmDialog

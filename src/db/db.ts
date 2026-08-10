@@ -46,6 +46,10 @@ export const DEFAULT_SETTINGS: Settings = {
   taxInvoiceNote: '',
   autoBackupEnabled: false,
   backupReminderDays: 3,
+  quickServiceEnabled: false,
+  requirePaymentVerify: true,
+  kitchenAutoPrint: true,
+  kitchenAlertMinutes: 10,
 }
 
 class PosDB extends Dexie {
@@ -104,6 +108,11 @@ class PosDB extends Dexie {
     //     ตารางนี้ไม่อยู่ในไฟล์สำรองและไม่ถูกล้างตอนล้างข้อมูล — ดู src/lib/backup.ts
     this.version(5).stores({
       appState: 'key',
+    })
+    // v6: โหมดบริการด่วน — index orderStatus เพื่อให้จอครัวดึงเฉพาะออเดอร์ที่ยังไม่เสิร์ฟได้เร็ว
+    this.version(6).stores({
+      sales:
+        '++id, receiptNo, createdAt, memberId, status, kind, refOriginalId, shiftId, staffId, orderStatus',
     })
   }
 }

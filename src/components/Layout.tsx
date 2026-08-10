@@ -25,12 +25,19 @@ interface NavItem {
   perm: PermissionKey
   end?: boolean
   /** แสดงเฉพาะเมื่อเปิดใช้ฟีเจอร์นั้น */
-  requires?: 'shift' | 'staff'
+  requires?: 'shift' | 'staff' | 'quickService'
 }
 
 const NAV: NavItem[] = [
   { to: '/', label: 'หน้าหลัก', icon: 'home', perm: 'reports', end: true },
   { to: '/pos', label: 'ขายหน้าร้าน', icon: 'cart', perm: 'sell' },
+  {
+    to: '/kitchen',
+    label: 'จอครัว / คิว',
+    icon: 'coffee',
+    perm: 'kitchen',
+    requires: 'quickService',
+  },
   { to: '/shift', label: 'กะ / ลิ้นชัก', icon: 'clock', perm: 'shift', requires: 'shift' },
   { to: '/products', label: 'สินค้า', icon: 'box', perm: 'products' },
   { to: '/receive', label: 'รับของเข้า', icon: 'truck', perm: 'stock' },
@@ -48,11 +55,12 @@ const NAV: NavItem[] = [
 /** เมนูที่ผู้ใช้คนนี้เข้าถึงได้ (ใช้ทั้งกับแถบนำทางและการเด้งหน้าแรก) */
 export function visibleNav(
   can: (p: PermissionKey) => boolean,
-  opts: { shiftEnabled: boolean; staffEnabled: boolean },
+  opts: { shiftEnabled: boolean; staffEnabled: boolean; quickServiceEnabled?: boolean },
 ): NavItem[] {
   return NAV.filter((item) => {
     if (item.requires === 'shift' && !opts.shiftEnabled) return false
     if (item.requires === 'staff' && !opts.staffEnabled) return false
+    if (item.requires === 'quickService' && !opts.quickServiceEnabled) return false
     return can(item.perm)
   })
 }
@@ -165,7 +173,11 @@ export default function Layout() {
   const { lock, logout, touch } = useAuth()
 
   const shiftEnabled = !!settings.shiftEnabled
-  const items = visibleNav(can, { shiftEnabled, staffEnabled })
+  const items = visibleNav(can, {
+    shiftEnabled,
+    staffEnabled,
+    quickServiceEnabled: !!settings.quickServiceEnabled,
+  })
 
   /* ===== ล็อกหน้าจออัตโนมัติเมื่อไม่มีการใช้งาน ===== */
   const autoLockMs = (settings.autoLockMinutes ?? 0) * 60_000

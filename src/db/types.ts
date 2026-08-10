@@ -132,6 +132,13 @@ export interface SaleItem {
 
 export type SaleStatus = 'completed' | 'voided'
 
+/**
+ * สถานะออเดอร์ในครัว (โหมดบริการด่วน)
+ * new = เข้าคิวครัวแล้ว · preparing = กำลังทำ · ready = พร้อมเสิร์ฟ/เรียกรับ · served = ส่งลูกค้าแล้ว
+ * เดินหน้าอย่างเดียว ถอยหลังได้เฉพาะกรณีกดผิด (ดู src/lib/quickService.ts)
+ */
+export type OrderStatus = 'new' | 'preparing' | 'ready' | 'served'
+
 /** ประเภทเอกสาร: บิลขาย หรือ เอกสารคืนสินค้า (ยอดติดลบทั้งใบ) */
 export type SaleKind = 'sale' | 'refund'
 
@@ -171,6 +178,23 @@ export interface Sale {
   appliedPromos: string[]
   /** เลขคิวประจำวัน (โหมดคาเฟ่/ร้านอาหาร) */
   queueNo?: number
+
+  /* ----- โหมดบริการด่วน (quick service): วงจรออเดอร์ในครัว ----- */
+  /** ไม่ระบุ = ยังไม่ได้ส่งเข้าครัว (บิลขายปกติที่ไม่ต้องทำอาหาร) */
+  orderStatus?: OrderStatus
+  orderSentAt?: number
+  orderReadyAt?: number
+  orderServedAt?: number
+  /**
+   * ด่านตรวจการชำระเงินก่อนส่งเข้าครัว
+   * เงินสดถือว่าตรวจแล้วในตัว (เงินอยู่ในมือ) แต่โอน/บัตรต้องมีคนกดยืนยันว่าเห็นสลิป/อนุมัติจริง
+   * — ครัวจะได้ไม่ทำอาหารทิ้งจากสลิปปลอมหรือโอนไม่สำเร็จ
+   */
+  paymentVerifiedAt?: number
+  paymentVerifiedById?: number
+  paymentVerifiedByName?: string
+  /** อ้างอิงการโอน/เลขอนุมัติบัตร ที่พนักงานกรอกไว้ตอนตรวจ */
+  paymentRef?: string
   /** พนักงานผู้ขาย (ระบบพนักงาน) */
   staffId?: number
   staffName?: string
@@ -324,6 +348,7 @@ export type PermissionKey =
   | 'reports' // รายงาน + หน้าหลัก
   | 'accounting' // บัญชี / รายจ่าย / ภาษี
   | 'shift' // เปิด-ปิดกะ + นับเงินลิ้นชัก
+  | 'kitchen' // จอครัว: ตรวจชำระเงิน + เดินสถานะออเดอร์
   | 'taxInvoice' // ออก/ยกเลิกใบกำกับภาษีเต็มรูป
   | 'settings' // ตั้งค่าระบบ + สำรองข้อมูล
   | 'staff' // จัดการพนักงาน
@@ -472,6 +497,16 @@ export interface Settings {
   queueEnabled?: boolean
   /** เปิดปุ่มพิมพ์สลิปครัว/บาร์หลังชำระเงิน */
   kitchenPrintEnabled?: boolean
+
+  /* ----- โหมดบริการด่วน (quick service) ----- */
+  /** เปิดจอครัว + วงจรออเดอร์ (คิว → กำลังทำ → พร้อมเสิร์ฟ) */
+  quickServiceEnabled?: boolean
+  /** บังคับตรวจการชำระเงินก่อนส่งเข้าครัว สำหรับช่องทางโอน/บัตร (ค่าเริ่มต้น: เปิด) */
+  requirePaymentVerify?: boolean
+  /** พิมพ์สลิปครัวอัตโนมัติทันทีที่กดส่งเข้าครัว */
+  kitchenAutoPrint?: boolean
+  /** เตือนบนจอครัวเมื่อออเดอร์ค้างนานเกินกี่นาที (0 = ไม่เตือน) */
+  kitchenAlertMinutes?: number
 
   /* ----- ระบบพนักงาน ----- */
   /** เปิดใช้ระบบพนักงาน — ต้องเข้าสู่ระบบด้วย PIN ก่อนใช้งาน */

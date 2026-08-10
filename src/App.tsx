@@ -29,10 +29,12 @@ import Accounting from './pages/Accounting'
 import Settings from './pages/Settings'
 import Shift from './pages/Shift'
 import Staff from './pages/Staff'
+import Kitchen from './pages/Kitchen'
 
 /** เส้นทาง + สิทธิ์ที่ต้องมี (แถบนำทางใน Layout.tsx ใช้ชุดเดียวกัน) */
 const ROUTES: { path: string; perm: PermissionKey; element: ReactNode }[] = [
   { path: '/pos', perm: 'sell', element: <Pos /> },
+  { path: '/kitchen', perm: 'kitchen', element: <Kitchen /> },
   { path: '/shift', perm: 'shift', element: <Shift /> },
   { path: '/products', perm: 'products', element: <Products /> },
   { path: '/receive', perm: 'stock', element: <GoodsReceiptPage /> },
@@ -87,6 +89,7 @@ function HomeRoute() {
   const first = visibleNav(can, {
     shiftEnabled: !!settings.shiftEnabled,
     staffEnabled: enabled,
+    quickServiceEnabled: !!settings.quickServiceEnabled,
   }).find((i) => i.to !== '/')
   return <Navigate to={first?.to ?? '/pos'} replace />
 }

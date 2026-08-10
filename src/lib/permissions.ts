@@ -16,6 +16,7 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   reports: 'ดูหน้าหลัก + รายงาน',
   accounting: 'บัญชี / รายจ่าย / ภาษี',
   shift: 'เปิด-ปิดกะ + นับเงินลิ้นชัก',
+  kitchen: 'จอครัว / คิวออเดอร์',
   taxInvoice: 'ออก / ยกเลิกใบกำกับภาษี',
   settings: 'ตั้งค่าระบบ + สำรองข้อมูล',
   staff: 'จัดการพนักงาน',
@@ -23,7 +24,7 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
 
 /** จัดกลุ่มเพื่อแสดงในหน้าแก้ไขพนักงาน */
 export const PERMISSION_GROUPS: { title: string; keys: PermissionKey[] }[] = [
-  { title: 'การขาย', keys: ['sell', 'discount', 'void', 'refund'] },
+  { title: 'การขาย', keys: ['sell', 'kitchen', 'discount', 'void', 'refund'] },
   { title: 'สินค้า / สต็อก', keys: ['products', 'stock'] },
   { title: 'ลูกค้า / การตลาด', keys: ['promotions', 'members'] },
   { title: 'เงิน / เอกสาร', keys: ['shift', 'reports', 'accounting', 'taxInvoice'] },
@@ -49,6 +50,7 @@ export const ROLE_PERMS: Record<StaffRole, PermissionKey[]> = {
   owner: ALL_PERMISSIONS,
   manager: [
     'sell',
+    'kitchen',
     'discount',
     'void',
     'refund',
@@ -61,7 +63,7 @@ export const ROLE_PERMS: Record<StaffRole, PermissionKey[]> = {
     'shift',
     'taxInvoice',
   ],
-  cashier: ['sell', 'members', 'shift'],
+  cashier: ['sell', 'kitchen', 'members', 'shift'],
 }
 
 /** สิทธิ์ที่ใช้จริงของพนักงานคนนี้ = สิทธิ์ตามบทบาท + ที่ปรับรายคน */

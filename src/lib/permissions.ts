@@ -19,15 +19,17 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   kitchen: 'จอครัว / คิวออเดอร์',
   taxInvoice: 'ออก / ยกเลิกใบกำกับภาษี',
   settings: 'ตั้งค่าระบบ + สำรองข้อมูล',
+  tableOrder: 'รับออเดอร์ที่โต๊ะ (มือถือ)',
+  slipView: 'เปิดดูรูปสลิปโอนเงิน',
   staff: 'จัดการพนักงาน',
 }
 
 /** จัดกลุ่มเพื่อแสดงในหน้าแก้ไขพนักงาน */
 export const PERMISSION_GROUPS: { title: string; keys: PermissionKey[] }[] = [
-  { title: 'การขาย', keys: ['sell', 'kitchen', 'discount', 'void', 'refund'] },
+  { title: 'การขาย', keys: ['sell', 'tableOrder', 'kitchen', 'discount', 'void', 'refund'] },
   { title: 'สินค้า / สต็อก', keys: ['products', 'stock'] },
   { title: 'ลูกค้า / การตลาด', keys: ['promotions', 'members'] },
-  { title: 'เงิน / เอกสาร', keys: ['shift', 'reports', 'accounting', 'taxInvoice'] },
+  { title: 'เงิน / เอกสาร', keys: ['shift', 'reports', 'accounting', 'taxInvoice', 'slipView'] },
   { title: 'ระบบ', keys: ['settings', 'staff'] },
 ]
 
@@ -50,6 +52,8 @@ export const ROLE_PERMS: Record<StaffRole, PermissionKey[]> = {
   owner: ALL_PERMISSIONS,
   manager: [
     'sell',
+    'tableOrder',
+    'slipView',
     'kitchen',
     'discount',
     'void',
@@ -63,7 +67,7 @@ export const ROLE_PERMS: Record<StaffRole, PermissionKey[]> = {
     'shift',
     'taxInvoice',
   ],
-  cashier: ['sell', 'kitchen', 'members', 'shift'],
+  cashier: ['sell', 'tableOrder', 'kitchen', 'members', 'shift'],
 }
 
 /** สิทธิ์ที่ใช้จริงของพนักงานคนนี้ = สิทธิ์ตามบทบาท + ที่ปรับรายคน */

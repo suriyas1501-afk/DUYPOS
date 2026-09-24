@@ -7,11 +7,13 @@ import type {
   GoodsReceipt,
   HeldBill,
   Member,
+  OrderTicket,
   Product,
   Promotion,
   Sale,
   Settings,
   Shift,
+  SlipQueueItem,
   Staff,
   StockCount,
   StockMove,
@@ -50,6 +52,11 @@ export const DEFAULT_SETTINGS: Settings = {
   requirePaymentVerify: true,
   kitchenAutoPrint: true,
   kitchenAlertMinutes: 10,
+  tableOrderEnabled: false,
+  tableCount: 20,
+  // ปิดไว้ตามที่เจ้าของร้านสั่ง — เปิดได้เมื่อมีขั้นตอน 'นำเงินส่งลิ้นชัก' แล้ว
+  tableCashEnabled: false,
+  slipKeepDays: 90,
 }
 
 class PosDB extends Dexie {
@@ -69,6 +76,10 @@ class PosDB extends Dexie {
   shifts!: Table<Shift, number>
   taxInvoices!: Table<TaxInvoice, number>
   appState!: Table<AppState, string>
+  /** กล่องขาเข้าใบสั่งจากมือถือ (เครื่องกลาง) — key เป็น ticketUid กันบิลซ้ำ */
+  orderTickets!: Table<OrderTicket, string>
+  /** คิวรูปสลิปรอส่งขึ้นคลาวด์ (เครื่องพนักงาน) — ห้ามเข้าไฟล์สำรอง */
+  slipQueue!: Table<SlipQueueItem, string>
 
   constructor() {
     super('pos-db')
@@ -113,6 +124,20 @@ class PosDB extends Dexie {
     this.version(6).stores({
       sales:
         '++id, receiptNo, createdAt, memberId, status, kind, refOriginalId, shiftId, staffId, orderStatus',
+    })
+    // v7: รับออเดอร์ที่โต๊ะ
+    //  - orderTickets = กล่องขาเข้าของเครื่องกลาง, primary key เป็น ticketUid ที่มือถือสร้าง
+    //    **primary key อย่างเดียวยังไม่กันบิลซ้ำ** — ตัวที่กันคือตอนรับใบสั่งต้องเช็ค state
+    //    ในทรานแซกชันเดียวกับ finalizeSale: ถ้า state เป็น 'billed' แล้วให้คืนบิลใบเดิม
+    //    ห้ามออกใบใหม่ (ยังไม่ได้เขียนโค้ดส่วนนี้ — ดู TABLE-ORDER-PLAN.md ขั้นที่ 5-6)
+    //  - slipQueue = คิวรูปสลิปบนมือถือ รอส่งขึ้นคลาวด์
+    //  **ห้ามใส่ 2 ตารางนี้ใน TABLES ของ src/lib/backup.ts** — เก็บไฟล์รูป ไฟล์สำรองจะบวมจนพัง
+    //  index orderChannel เพิ่มที่ sales เพื่อแยกรายงานยอดขายโต๊ะ/เคาน์เตอร์ได้ภายหลัง
+    this.version(7).stores({
+      orderTickets: 'ticketUid, state, createdAt, saleId',
+      slipQueue: 'slipId, state, createdAt',
+      sales:
+        '++id, receiptNo, createdAt, memberId, status, kind, refOriginalId, shiftId, staffId, orderStatus, orderChannel',
     })
   }
 }

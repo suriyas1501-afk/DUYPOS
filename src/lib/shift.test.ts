@@ -217,6 +217,107 @@ describe('openShift / closeShift', () => {
 })
 
 /* =========================================================
+   โหมดโต๊ะ — เงินสดที่พนักงานรับไว้ที่โต๊ะยังไม่อยู่ในลิ้นชัก
+
+   กฎ: cashCustody 'staff' + ยังไม่ส่ง → หักออกจาก expectedCash
+       บิลเก่าที่ไม่มีฟิลด์นี้ ต้องได้ผลเท่าเดิมเป๊ะ (characterization)
+   ========================================================= */
+
+describe('computeShiftSummary — เงินสดที่อยู่กับพนักงาน (โหมดโต๊ะ)', () => {
+  beforeEach(async () => {
+    settings = await resetDb({ shiftEnabled: true, vatRate: 0 })
+    productId = await addProduct({ name: 'สินค้า', price: 100, cost: 0, stock: 1000 })
+  })
+
+  it('บิลที่ไม่มี cashCustody (บิลเก่าทุกใบ) ให้ผลเท่าเดิมเป๊ะ', async () => {
+    const shift = await openShift({ openingCash: 1000 })
+    await sell(100, [{ method: 'cash', amount: 100 }])
+
+    const s = await summaryOf(shift.id!, 1100)
+    expect(s.byMethod.cash).toBe(100)
+    expect(s.cashWithStaff).toBe(0)
+    expect(s.cashHandedOver).toBe(0)
+    expect(s.expectedCash).toBe(1100)
+    expect(s.diff).toBe(0)
+  })
+
+  it('เงินสดที่โต๊ะยังไม่ส่ง → ไม่นับเป็นเงินในลิ้นชัก แต่ยังเป็นยอดขายเงินสด', async () => {
+    const shift = await openShift({ openingCash: 1000 })
+    const sale = await sell(100, [{ method: 'cash', amount: 100 }])
+    await db.sales.update(sale.id!, {
+      orderChannel: 'table',
+      tableLabel: '5',
+      cashCustody: 'staff',
+      cashCustodyById: 7,
+      cashCustodyByName: 'สมชาย',
+    })
+
+    const s = await summaryOf(shift.id!, 1000)
+    // ยอดขายเงินสดยังเป็น 100 — ความหมายของ byMethod.cash ไม่เปลี่ยน
+    expect(s.byMethod.cash).toBe(100)
+    expect(s.cashWithStaff).toBe(100)
+    // ลิ้นชักยังมีแค่เงินตั้งต้น เพราะเงินอยู่ในกระเป๋าพนักงาน
+    expect(s.expectedCash).toBe(1000)
+    // นับได้ 1000 = ตรง ไม่ใช่ขาด 100
+    expect(s.diff).toBe(0)
+  })
+
+  it('พนักงานนำเงินส่งลิ้นชักแล้ว → เงินกลับมานับในลิ้นชัก', async () => {
+    const shift = await openShift({ openingCash: 1000 })
+    const sale = await sell(100, [{ method: 'cash', amount: 100 }])
+    await db.sales.update(sale.id!, { cashCustody: 'staff' })
+    expect((await summaryOf(shift.id!)).expectedCash).toBe(1000)
+
+    await db.sales.update(sale.id!, { cashHandoverAt: Date.now() })
+
+    const s = await summaryOf(shift.id!, 1100)
+    expect(s.cashWithStaff).toBe(0)
+    expect(s.cashHandedOver).toBe(100)
+    expect(s.expectedCash).toBe(1100)
+    expect(s.diff).toBe(0)
+  })
+
+  it('เงินทอน: รับ 500 ทอน 400 → เงินที่อยู่กับพนักงานคือ 100 ไม่ใช่ 500', async () => {
+    const shift = await openShift({ openingCash: 1000 })
+    const sale = await sell(100, [{ method: 'cash', amount: 500 }])
+    await db.sales.update(sale.id!, { cashCustody: 'staff' })
+
+    const s = await summaryOf(shift.id!, 1000)
+    expect(s.cashWithStaff).toBe(100)
+    expect(s.expectedCash).toBe(1000)
+  })
+
+  it('คืนเงินสดบิลที่โต๊ะ → หักกลับถูกทาง ไม่ทำให้ยอดที่อยู่กับพนักงานบวมขึ้น', async () => {
+    const shift = await openShift({ openingCash: 1000 })
+    const sale = await sell(100, [{ method: 'cash', amount: 100 }])
+    await db.sales.update(sale.id!, { cashCustody: 'staff' })
+
+    const refund = await refundSale(sale.id!, [{ itemIndex: 0, qty: 1 }], {
+      reason: 'ลูกค้าคืน',
+      payments: [{ method: 'cash', amount: -100 }],
+    })
+    await db.sales.update(refund.id!, { cashCustody: 'staff' })
+
+    const s = await summaryOf(shift.id!, 1000)
+    expect(s.cashWithStaff).toBe(0)
+    expect(s.expectedCash).toBe(1000)
+  })
+
+  it('เงินสดที่โต๊ะปนกับเงินสดที่เคาน์เตอร์ — แยกกันถูกต้อง', async () => {
+    const shift = await openShift({ openingCash: 1000 })
+    await sell(100, [{ method: 'cash', amount: 100 }]) // เคาน์เตอร์
+    const atTable = await sell(200, [{ method: 'cash', amount: 200 }])
+    await db.sales.update(atTable.id!, { cashCustody: 'staff' })
+
+    const s = await summaryOf(shift.id!, 1100)
+    expect(s.byMethod.cash).toBe(300)
+    expect(s.cashWithStaff).toBe(200)
+    expect(s.expectedCash).toBe(1100) // 1000 + 300 − 200
+    expect(s.diff).toBe(0)
+  })
+})
+
+/* =========================================================
    บิลที่ขายตอนลืมเปิดกะ — openShift() ดูดเข้ากะให้แล้ว
    เงินอยู่ในลิ้นชักจริง จึงต้องถูกนับตอนปิดกะด้วย
 

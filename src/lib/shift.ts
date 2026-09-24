@@ -100,6 +100,9 @@ export function computeShiftSummary(
   countedCash: number,
 ): ShiftSummary {
   const byMethod: Record<PaymentMethod, number> = { cash: 0, transfer: 0, card: 0 }
+  /** เงินสดจากโต๊ะที่ยังอยู่กับพนักงาน / ที่นำส่งลิ้นชักแล้ว (โหมดโต๊ะเท่านั้น) */
+  let cashWithStaff = 0
+  let cashHandedOver = 0
   let billCount = 0
   let salesTotal = 0
   let refundCount = 0
@@ -120,8 +123,20 @@ export function computeShiftSummary(
     }
     salesTotal += s.total
     for (const k of PAY_KEYS) byMethod[k] += saleAmountByMethod(s, k)
+
+    // โหมดโต๊ะ: พนักงานรับเงินสดที่โต๊ะ เงินยังไม่ถึงลิ้นชัก
+    // ต้องแยกออกมา ไม่งั้นระบบจะคิดว่าเงินอยู่ในลิ้นชักแล้วและปิดกะจะขาดทุกวัน
+    // (บิลเก่าทั้งหมดไม่มีฟิลด์นี้ → ไม่เข้าเงื่อนไข ผลลัพธ์เท่าเดิมเป๊ะ)
+    if (s.cashCustody === 'staff') {
+      // ใช้ saleAmountByMethod เพื่อให้เอกสารคืนสินค้า (ค่าลบ) หักกลับถูกทางเอง
+      const cash = saleAmountByMethod(s, 'cash')
+      if (s.cashHandoverAt == null) cashWithStaff += cash
+      else cashHandedOver += cash
+    }
   }
   for (const k of PAY_KEYS) byMethod[k] = r2(byMethod[k])
+  cashWithStaff = r2(cashWithStaff)
+  cashHandedOver = r2(cashHandedOver)
 
   let expenseCash = 0
   for (const e of expenses) {
@@ -139,7 +154,10 @@ export function computeShiftSummary(
   cashIn = r2(cashIn)
   cashOut = r2(cashOut)
 
-  const expectedCash = r2(shift.openingCash + byMethod.cash - expenseCash + cashIn - cashOut)
+  // byMethod.cash คงความหมายเดิม (ยอดขายเงินสดทั้งหมดของกะ) — หัก cashWithStaff ที่นี่จุดเดียว
+  const expectedCash = r2(
+    shift.openingCash + byMethod.cash - cashWithStaff - expenseCash + cashIn - cashOut,
+  )
 
   return {
     billCount,
@@ -151,6 +169,8 @@ export function computeShiftSummary(
     expenseCash,
     cashIn,
     cashOut,
+    cashWithStaff,
+    cashHandedOver,
     expectedCash,
     countedCash: r2(countedCash),
     diff: r2(r2(countedCash) - expectedCash),

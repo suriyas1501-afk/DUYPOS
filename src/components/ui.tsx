@@ -494,7 +494,7 @@ export const toast = {
 export function ToastHost() {
   const { toasts, remove } = useToastStore()
   return (
-    <div className="pointer-events-none fixed right-4 bottom-4 z-[70] flex flex-col gap-2">
+    <div className="pointer-events-none fixed right-[calc(1rem+env(safe-area-inset-right))] bottom-[calc(1rem+env(safe-area-inset-bottom))] z-[70] flex flex-col gap-2">
       {toasts.map((t) => (
         <div
           key={t.id}

@@ -139,6 +139,51 @@ export type SaleStatus = 'completed' | 'voided'
  */
 export type OrderStatus = 'new' | 'preparing' | 'ready' | 'served'
 
+/** ช่องทางที่บิลนี้เกิด — 'table' = พนักงานรับออเดอร์ที่โต๊ะด้วยมือถือ */
+export type OrderChannel = 'counter' | 'table' | 'takeaway'
+
+/**
+ * เงินสดของบิลนี้อยู่ที่ไหน
+ * 'drawer' (ค่าเริ่มต้นเมื่อไม่ระบุ) = เข้าลิ้นชักแล้ว — คิดใน expectedCash ตามปกติ
+ * 'staff'  = อยู่กับพนักงานที่โต๊ะ ยังไม่ถึงลิ้นชัก — **ต้องหักออกจาก expectedCash**
+ *            จนกว่า cashHandoverAt จะถูกเซ็ต (ดู computeShiftSummary ใน src/lib/shift.ts)
+ */
+export type CashCustody = 'drawer' | 'staff'
+
+/**
+ * กล่องขาเข้าของเครื่องกลาง — 1 แถวต่อ 1 ใบสั่งที่มือถือส่งมา
+ *
+ * `ticketUid` เป็น primary key เพื่อให้การกดส่งซ้ำจากมือถือ (เน็ตช้าแล้วกดใหม่)
+ * เขียนทับแถวเดิมแทนที่จะสร้างบิลใบที่สอง — นี่คือกลไกกันบิลซ้ำทั้งหมดของโหมดโต๊ะ
+ */
+export interface OrderTicket {
+  /** ไอดีที่มือถือสร้างตอนเริ่มออเดอร์ (ไม่ใช่ของเซิร์ฟเวอร์) */
+  ticketUid: string
+  state: 'received' | 'billed' | 'rejected'
+  /** บิลที่เครื่องกลางออกให้ใบสั่งนี้ (มีเมื่อ state = 'billed') */
+  saleId?: number
+  /** เหตุผลที่ปฏิเสธ เช่น เวอร์ชันแอปบนมือถือเก่าเกินไป */
+  rejectReason?: string
+  tableLabel?: string
+  createdAt: number
+  billedAt?: number
+}
+
+/** คิวรูปสลิปบนเครื่องพนักงาน รอส่งขึ้นคลาวด์ (ไม่เข้าไฟล์สำรอง) */
+export interface SlipQueueItem {
+  slipId: string
+  /** ไฟล์รูปที่ย่อแล้ว — เก็บเป็น Blob ไม่ใช่ data URL เพื่อไม่ให้บวม 33% */
+  blob: Blob
+  state: 'pending' | 'uploading' | 'done' | 'failed'
+  /** จำนวนครั้งที่ลองส่งแล้ว ใช้คำนวณ backoff */
+  attempts: number
+  lastError?: string
+  /** เลขโต๊ะ + ยอดเงิน ติดไปกับรูป เพื่อให้ตามได้แม้ใบสั่งหาย */
+  tableLabel?: string
+  amount?: number
+  createdAt: number
+}
+
 /** ประเภทเอกสาร: บิลขาย หรือ เอกสารคืนสินค้า (ยอดติดลบทั้งใบ) */
 export type SaleKind = 'sale' | 'refund'
 
@@ -211,6 +256,26 @@ export interface Sale {
   /** ใบกำกับภาษีเต็มรูปที่ออกให้บิลนี้ (ใบที่ยังไม่ถูกยกเลิก) */
   taxInvoiceId?: number
   taxInvoiceNo?: string
+
+  /* ----- รับออเดอร์ที่โต๊ะ (โหมดโต๊ะ) ----- */
+  /** ช่องทางที่บิลนี้เกิด — ไม่ระบุ = 'counter' (บิลเก่าทั้งหมด) */
+  orderChannel?: OrderChannel
+  /** เลขโต๊ะแบบ snapshot เช่น "5" — เก็บเป็นสตริงเพราะเลขโต๊ะไม่ใช่ตัวเลขที่เอาไปคำนวณ */
+  tableLabel?: string
+  /** ใบสั่งจากมือถือที่กลายมาเป็นบิลใบนี้ (ใช้ตามย้อนกลับ) */
+  ticketUid?: string
+  /** เงินสดของบิลนี้อยู่ที่ไหน — ไม่ระบุ = อยู่ในลิ้นชักแล้ว */
+  cashCustody?: CashCustody
+  cashCustodyById?: number
+  cashCustodyByName?: string
+  /** เวลาที่พนักงานนำเงินสดส่งเข้าลิ้นชัก — เซ็ตแล้วเงินกลับมาคิดใน expectedCash */
+  cashHandoverAt?: number
+  /** รูปสลิปโอนเงินที่พนักงานถ่ายไว้เป็นหลักฐาน */
+  slipId?: string
+  slipUploadedAt?: number
+  /** เหตุผลที่ไม่มีรูป (เช่น จ่ายเงินสด / กล้องใช้ไม่ได้) — ไว้ให้หน้ากระทบยอดแยกแยะ */
+  slipMissingReason?: string
+
   createdAt: number
   voidedAt?: number
 }
@@ -351,6 +416,8 @@ export type PermissionKey =
   | 'kitchen' // จอครัว: ตรวจชำระเงิน + เดินสถานะออเดอร์
   | 'taxInvoice' // ออก/ยกเลิกใบกำกับภาษีเต็มรูป
   | 'settings' // ตั้งค่าระบบ + สำรองข้อมูล
+  | 'tableOrder' // รับออเดอร์ที่โต๊ะด้วยมือถือ
+  | 'slipView' // เปิดดูรูปสลิปโอนเงิน (มีข้อมูลส่วนบุคคลของลูกค้า)
   | 'staff' // จัดการพนักงาน
 
 export interface Staff {
@@ -403,6 +470,13 @@ export interface ShiftSummary {
   cashOut: number
   /** เงินสดที่ควรมีในลิ้นชัก = ตั้งต้น + ขายเงินสด − รายจ่ายเงินสด + นำเข้า − นำออก */
   expectedCash: number
+  /**
+   * เงินสดจากบิลที่ยังอยู่กับพนักงาน ยังไม่ถึงลิ้นชัก (โหมดโต๊ะ)
+   * ถูก **หักออก** จาก expectedCash แล้ว — 0 เสมอถ้าไม่เปิดรับเงินสดที่โต๊ะ
+   */
+  cashWithStaff: number
+  /** เงินสดจากโต๊ะที่พนักงานนำส่งลิ้นชักแล้ว (คิดใน expectedCash ตามปกติ) */
+  cashHandedOver: number
   countedCash: number
   /** นับได้ − ควรมี (บวก = เกิน, ลบ = ขาด) */
   diff: number
@@ -538,6 +612,20 @@ export interface Settings {
   backupReminderDays?: number
   /** เวลาที่สำรองสำเร็จล่าสุด */
   lastBackupAt?: number
+
+  /* ----- รับออเดอร์ที่โต๊ะ ----- */
+  /** เปิดโหมดรับออเดอร์ที่โต๊ะด้วยมือถือ */
+  tableOrderEnabled?: boolean
+  /** จำนวนโต๊ะ (โต๊ะชื่อ 1 ถึง N) — อ่านด้วย ?? 20 */
+  tableCount?: number
+  /**
+   * ให้พนักงานรับเงินสดที่โต๊ะได้
+   * **ค่าเริ่มต้นคือปิด** — เปิดแล้วเงินจะไม่อยู่ในลิ้นชักทันที ต้องมีขั้นตอนนำเงินส่ง
+   * ไม่งั้นปิดกะจะขาดทุกวัน (ดู computeShiftSummary)
+   */
+  tableCashEnabled?: boolean
+  /** เก็บรูปสลิปไว้กี่วันแล้วลบ (ค่าเริ่มต้น 90) */
+  slipKeepDays?: number
 }
 
 /**

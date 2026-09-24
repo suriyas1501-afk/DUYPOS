@@ -10,6 +10,16 @@ body,
   height: 100%;
 }
 
+/* ===== พื้นที่ปลอดภัยของ iPhone =====
+   index.html ใส่ viewport-fit=cover ไว้ → viewport กินเต็มจอรวมส่วนที่อยู่ใต้
+   Dynamic Island / รอยบาก / แถบ home ดังนั้น **ต้องชดเชย inset เองที่นี่**
+   ถ้าลบบล็อกนี้ออกโดยยังมี viewport-fit=cover เนื้อหาจะไปอยู่ใต้ของพวกนั้นทันที
+   (จอที่ไม่มีรอยบาก/เดสก์ท็อป: env() คืน 0 จึงไม่กระทบอะไร) */
+#root {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+
 body {
   @apply bg-slate-100 text-slate-800 font-sans antialiased;
 }

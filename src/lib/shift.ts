@@ -42,6 +42,46 @@ export function saleInShift(s: Sale, shift: Shift): boolean {
   return s.createdAt >= shift.openedAt && s.createdAt <= hi
 }
 
+/** รวม 2 ชุดโดยไม่ให้แถวเดียวกันถูกนับซ้ำ (เอกสารที่เข้าเงื่อนไขทั้ง 2 query) */
+function mergeById<T extends { id?: number }>(byTime: T[], byShiftId: T[]): T[] {
+  const out = [...byTime]
+  const seen = new Set(byTime.map((x) => x.id))
+  for (const x of byShiftId) if (!seen.has(x.id)) out.push(x)
+  return out
+}
+
+/**
+ * ดึงบิล + รายจ่ายของกะนี้ให้ครบ — **ทุกที่ที่คำนวณเงินของกะต้องเรียกตัวนี้**
+ *
+ * ต้องดึงด้วย index `shiftId` เป็นหลัก เพราะ openShift() ดูดเอกสารที่เกิดตอนไม่มีกะเปิด
+ * เข้ากะใหม่ (ตั้ง shiftId ให้) แต่เอกสารพวกนั้นมี createdAt **ก่อน** openedAt
+ * ถ้าดึงด้วยช่วงเวลาอย่างเดียวจะหลุดหมด → ปิดกะแล้วเงิน "เกิน" โดยหาสาเหตุไม่ได้
+ * ซึ่งตรงข้ามกับเจตนาของการดูดบิลพอดี
+ *
+ * ยังต้องดึงด้วยช่วงเวลาควบคู่ไปด้วย เพราะเอกสารที่ไม่มี shiftId
+ * (ร้านที่เพิ่งเปิดระบบกะกลางคัน) อาศัย saleInShift()/expenseInShift() ตัดสินจากเวลาแทน
+ * การกรองจริงยังเป็นหน้าที่ของ computeShiftSummary() เหมือนเดิม
+ */
+export async function loadShiftDocs(
+  shift: Shift,
+  until: number = Date.now(),
+): Promise<{ sales: Sale[]; expenses: Expense[] }> {
+  const [salesByTime, expensesByTime] = await Promise.all([
+    db.sales.where('createdAt').between(shift.openedAt, until, true, true).toArray(),
+    db.expenses.where('createdAt').between(shift.openedAt, until, true, true).toArray(),
+  ])
+  if (shift.id == null) return { sales: salesByTime, expenses: expensesByTime }
+
+  const [salesById, expensesById] = await Promise.all([
+    db.sales.where('shiftId').equals(shift.id).toArray(),
+    db.expenses.where('shiftId').equals(shift.id).toArray(),
+  ])
+  return {
+    sales: mergeById(salesByTime, salesById),
+    expenses: mergeById(expensesByTime, expensesById),
+  }
+}
+
 /** รายจ่ายนี้อยู่ในกะนี้ไหม (เกณฑ์เดียวกับบิล แต่ใช้เวลาที่บันทึก ไม่ใช่วันที่ของรายการ) */
 export function expenseInShift(e: Expense, shift: Shift): boolean {
   if (e.shiftId != null) return e.shiftId === shift.id
@@ -199,14 +239,7 @@ export async function addCashMove(
     if (shift.status !== 'open') throw new Error('กะนี้ปิดแล้ว')
     if (input.type === 'out') {
       // กันถอนเกินเงินที่มีในลิ้นชัก (คิดจากยอดที่ระบบคาดว่ามีอยู่ ณ ตอนนี้)
-      const sales = await db.sales
-        .where('createdAt')
-        .between(shift.openedAt, Date.now(), true, true)
-        .toArray()
-      const expenses = await db.expenses
-        .where('createdAt')
-        .between(shift.openedAt, Date.now(), true, true)
-        .toArray()
+      const { sales, expenses } = await loadShiftDocs(shift)
       const { expectedCash } = computeShiftSummary(shift, sales, expenses, 0)
       if (amount > expectedCash + 0.001) {
         throw new Error(
@@ -246,14 +279,7 @@ export async function closeShift(
     if (!shift) throw new Error('ไม่พบกะนี้')
     if (shift.status !== 'open') throw new Error('กะนี้ปิดแล้ว')
 
-    const sales = await db.sales
-      .where('createdAt')
-      .between(shift.openedAt, closedAt, true, true)
-      .toArray()
-    const expenses = await db.expenses
-      .where('createdAt')
-      .between(shift.openedAt, closedAt, true, true)
-      .toArray()
+    const { sales, expenses } = await loadShiftDocs(shift, closedAt)
 
     const summary = computeShiftSummary(shift, sales, expenses, counted)
     const patch: Partial<Shift> = {

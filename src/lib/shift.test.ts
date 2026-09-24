@@ -3,7 +3,14 @@ import { db } from '../db/db'
 import type { Settings } from '../db/types'
 import { computeTotals } from './totals'
 import { finalizeSale, refundSale, voidSale } from './checkout'
-import { addCashMove, closeShift, computeShiftSummary, countTotal, openShift } from './shift'
+import {
+  addCashMove,
+  closeShift,
+  computeShiftSummary,
+  countTotal,
+  loadShiftDocs,
+  openShift,
+} from './shift'
 import { addProduct, cartLine, resetDb } from '../test/helpers'
 
 /* =========================================================
@@ -30,11 +37,16 @@ async function sell(price: number, payments: { method: 'cash' | 'transfer' | 'ca
   return finalizeSale({ items, totals: totalsOf(items), settings, payments })
 }
 
-/** คำนวณสรุปกะจากข้อมูลสดในฐานข้อมูล */
+/**
+ * คำนวณสรุปกะจากข้อมูลสดในฐานข้อมูล
+ *
+ * **ต้องดึงเอกสารด้วย loadShiftDocs() เหมือนโค้ดจริง** — เคยใช้ db.sales.toArray()
+ * ทั้งตาราง ซึ่งทำให้เทสต์ผ่านทั้งที่โค้ดจริงพัง (บิลที่ openShift ดูดเข้ากะหลุด
+ * จาก query ช่วงเวลา) เทสต์ที่ป้อนข้อมูลคนละทางกับของจริงคือเทสต์ที่โกหก
+ */
 async function summaryOf(shiftId: number, counted = 0) {
   const shift = await db.shifts.get(shiftId)
-  const sales = await db.sales.toArray()
-  const expenses = await db.expenses.toArray()
+  const { sales, expenses } = await loadShiftDocs(shift!)
   return computeShiftSummary(shift!, sales, expenses, counted)
 }
 
@@ -201,5 +213,76 @@ describe('openShift / closeShift', () => {
     expect(countTotal([{ denom: 0.5, count: 3 }, { denom: 0.25, count: 2 }])).toBe(2)
     expect(countTotal([])).toBe(0)
     expect(countTotal(undefined)).toBe(0)
+  })
+})
+
+/* =========================================================
+   บิลที่ขายตอนลืมเปิดกะ — openShift() ดูดเข้ากะให้แล้ว
+   เงินอยู่ในลิ้นชักจริง จึงต้องถูกนับตอนปิดกะด้วย
+
+   เคยพัง: ทุกจุดดึงบิลด้วย createdAt ตั้งแต่ openedAt เป็นต้นไป
+   แต่บิลที่ถูกดูดมามี createdAt *ก่อน* openedAt จึงหลุดทุกใบ
+   → ปิดกะแล้วขึ้นว่า "เงินเกิน" และ billCount/ยอดขายของกะหายไปด้วย
+   ========================================================= */
+
+describe('บิลที่ถูกดูดเข้ากะ ต้องถูกนับตอนปิดกะ', () => {
+  beforeEach(async () => {
+    settings = await resetDb({ shiftEnabled: true, vatRate: 0 })
+    productId = await addProduct({ name: 'สินค้า', price: 100, cost: 0, stock: 1000 })
+  })
+
+  /** ขายก่อนเปิดกะ: ขายปกติแล้วย้อน createdAt ให้อยู่ก่อนเวลาเปิดกะ */
+  async function sellBeforeShift(price: number, minutesAgo: number) {
+    const sale = await sell(price, [{ method: 'cash', amount: price }])
+    await db.sales.update(sale.id!, { createdAt: Date.now() - minutesAgo * 60000 })
+    return sale
+  }
+
+  it('ขายเงินสดตอนลืมเปิดกะ → เปิดกะ → ปิดกะ: เงินต้องตรง ไม่ใช่ "เกิน"', async () => {
+    const sale = await sellBeforeShift(100, 30)
+    const shift = await openShift({ openingCash: 0 })
+
+    expect((await db.sales.get(sale.id!))?.shiftId).toBe(shift.id)
+
+    const s = await summaryOf(shift.id!, 100)
+    expect(s.billCount).toBe(1)
+    expect(s.byMethod.cash).toBe(100)
+    expect(s.expectedCash).toBe(100)
+    expect(s.diff).toBe(0) // เคยได้ 100 = "เงินเกิน" ทั้งที่ทุกอย่างถูกต้อง
+  })
+
+  it('ยอดที่ closeShift บันทึกลงฐานข้อมูลต้องรวมบิลที่ถูกดูดมาด้วย', async () => {
+    await sellBeforeShift(100, 30)
+    const shift = await openShift({ openingCash: 0 })
+    const closed = await closeShift(shift.id!, { countedCash: 100 })
+
+    expect(closed.summary?.billCount).toBe(1)
+    expect(closed.summary?.byMethod.cash).toBe(100)
+    expect(closed.summary?.expectedCash).toBe(100)
+    expect(closed.summary?.diff).toBe(0)
+  })
+
+  it('นำเงินออกจากลิ้นชักได้ตามเงินที่มีจริง รวมบิลที่ถูกดูดมา', async () => {
+    await sellBeforeShift(100, 30)
+    const shift = await openShift({ openingCash: 0 })
+
+    // เคยพัง: ระบบคิดว่าลิ้นชักมี ฿0 จึงบล็อกการนำเงินออกที่ถูกต้อง
+    await addCashMove(shift.id!, { type: 'out', amount: 100, reason: 'ฝากธนาคาร' })
+
+    const s = await summaryOf(shift.id!, 0)
+    expect(s.cashOut).toBe(100)
+    expect(s.expectedCash).toBe(0)
+    expect(s.diff).toBe(0)
+  })
+
+  it('ไม่ดูดบิลของกะก่อนหน้าที่ปิดไปแล้ว', async () => {
+    const first = await openShift({ openingCash: 0 })
+    await sell(100, [{ method: 'cash', amount: 100 }])
+    await closeShift(first.id!, { countedCash: 100 })
+
+    const second = await openShift({ openingCash: 0 })
+    const s = await summaryOf(second.id!, 0)
+    expect(s.billCount).toBe(0)
+    expect(s.expectedCash).toBe(0)
   })
 })

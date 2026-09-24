@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db } from '../../db/db'
 import type { CashCountLine, Expense, Sale, Shift, ShiftSummary } from '../../db/types'
 import { useSettings } from '../../db/hooks'
 import {
@@ -9,6 +8,7 @@ import {
   closeShift,
   computeShiftSummary,
   countTotal,
+  loadShiftDocs,
 } from '../../lib/shift'
 import { printShiftReport } from '../../lib/shiftReport'
 import { baht, endOfDay, money, r2 } from '../../lib/format'
@@ -48,31 +48,30 @@ export function useShiftSummary(
   }, [])
 
   const active = shift != null
-  const from = shift?.openedAt ?? 0
+  const shiftId = shift?.id
   const to = endOfDay(now)
 
-  const sales = useLiveQuery<Sale[]>(
-    () =>
-      active
-        ? db.sales.where('createdAt').between(from, to, true, true).toArray()
-        : Promise.resolve<Sale[]>([]),
-    [active, from, to],
+  /* ต้องดึงผ่าน loadShiftDocs() เท่านั้น — ดึงด้วยช่วงเวลาอย่างเดียวจะไม่เห็นบิล
+     ที่ openShift() ดูดเข้ากะ (createdAt ก่อน openedAt) แล้วจอจะขึ้นว่าเงิน "เกิน"
+     ผลลัพธ์พก shiftId ที่มันถูกคำนวณมาด้วย เพราะ useLiveQuery เสิร์ฟค่าเก่าอีกเฟรม
+     หลัง deps เปลี่ยน — ถ้าเชื่อค่านั้นจะเอายอดของกะก่อนหน้ามาโชว์ */
+  const docs = useLiveQuery<{ shiftId: number | undefined; sales: Sale[]; expenses: Expense[] } | null>(
+    async () => {
+      if (!shift) return null
+      return { shiftId: shift.id, ...(await loadShiftDocs(shift, to)) }
+    },
+    [active, shiftId, shift?.openedAt, to],
   )
-  const expenses = useLiveQuery<Expense[]>(
-    () =>
-      active
-        ? db.expenses.where('createdAt').between(from, to, true, true).toArray()
-        : Promise.resolve<Expense[]>([]),
-    [active, from, to],
-  )
+
+  const fresh = docs && docs.shiftId === shiftId ? docs : null
 
   const summary = useMemo(() => {
-    if (!shift || !sales || !expenses) return null
+    if (!shift || !fresh) return null
     // computeShiftSummary กรองรายการของกะนี้ให้เอง (ตาม shiftId / ช่วงเวลา)
-    return computeShiftSummary(shift, sales, expenses, countedCash)
-  }, [shift, sales, expenses, countedCash])
+    return computeShiftSummary(shift, fresh.sales, fresh.expenses, countedCash)
+  }, [shift, fresh, countedCash])
 
-  return { summary, loading: active && (sales === undefined || expenses === undefined) }
+  return { summary, loading: active && fresh == null }
 }
 
 interface Props {

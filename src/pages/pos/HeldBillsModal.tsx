@@ -17,6 +17,8 @@ export default function HeldBillsModal({
   const bills = useLiveQuery(() => db.heldBills.orderBy('createdAt').reverse().toArray(), [])
   const cartCount = useCart((s) => s.items.length)
   const [pending, setPending] = useState<HeldBill | null>(null)
+  /** บิลที่รอยืนยันการลบ — ลบบิลพักกู้คืนไม่ได้ ห้ามลบทันทีจากการกดปุ่มเดียว */
+  const [pendingDelete, setPendingDelete] = useState<HeldBill | null>(null)
 
   const doLoad = (b: HeldBill) => {
     useCart.getState().load(b.items as CartItem[], b.memberId, {
@@ -72,9 +74,8 @@ export default function HeldBillsModal({
                     size="sm"
                     icon="trash"
                     className="text-rose-500"
-                    onClick={() => {
-                      if (b.id != null) void db.heldBills.delete(b.id)
-                    }}
+                    title="ลบบิลที่พักไว้"
+                    onClick={() => setPendingDelete(b)}
                   />
                 </div>
               )
@@ -92,6 +93,36 @@ export default function HeldBillsModal({
           if (pending) doLoad(pending)
         }}
         onClose={() => setPending(null)}
+      />
+
+      <ConfirmDialog
+        open={pendingDelete != null}
+        danger
+        title="ลบบิลที่พักไว้"
+        message={
+          pendingDelete
+            ? `ลบ “${pendingDelete.label}” ทิ้งถาวร — รายการในบิลนี้จะหายทั้งหมด กู้คืนไม่ได้`
+            : ''
+        }
+        confirmLabel="ลบทิ้ง"
+        onConfirm={() => {
+          const id = pendingDelete?.id
+          if (id == null) return
+          // pendingDelete เป็น snapshot — อีกแท็บอาจโหลดบิลใบนี้กลับเข้าตะกร้าไปแล้ว
+          // (doLoad ลบแถวทิ้งทันที) ต้องอ่านผลจริงก่อนแจ้ง ไม่ใช่แจ้งสำเร็จไว้ก่อน
+          void db
+            .transaction('rw', db.heldBills, async () => {
+              if (!(await db.heldBills.get(id))) return false
+              await db.heldBills.delete(id)
+              return true
+            })
+            .then((ok) =>
+              ok
+                ? toast.success('ลบบิลที่พักไว้แล้ว')
+                : toast.error('บิลนี้ถูกเรียกใช้หรือถูกลบไปแล้ว'),
+            )
+        }}
+        onClose={() => setPendingDelete(null)}
       />
     </>
   )

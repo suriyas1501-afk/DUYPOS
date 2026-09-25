@@ -30,10 +30,12 @@ import Settings from './pages/Settings'
 import Shift from './pages/Shift'
 import Staff from './pages/Staff'
 import Kitchen from './pages/Kitchen'
+import TableOrder from './pages/TableOrder'
 
 /** เส้นทาง + สิทธิ์ที่ต้องมี (แถบนำทางใน Layout.tsx ใช้ชุดเดียวกัน) */
 const ROUTES: { path: string; perm: PermissionKey; element: ReactNode }[] = [
   { path: '/pos', perm: 'sell', element: <Pos /> },
+  { path: '/table', perm: 'tableOrder', element: <TableOrder /> },
   { path: '/kitchen', perm: 'kitchen', element: <Kitchen /> },
   { path: '/shift', perm: 'shift', element: <Shift /> },
   { path: '/products', perm: 'products', element: <Products /> },
@@ -86,10 +88,13 @@ function HomeRoute() {
       </ErrorBoundary>
     )
   }
+  // ต้องส่ง flag ให้ครบเหมือน Layout — พนักงานที่มีสิทธิ์ 'tableOrder' อย่างเดียว
+  // ถ้าไม่ส่ง tableOrderEnabled จะหาเมนูแรกไม่เจอ แล้วถูกเด้งไป /pos ที่ตัวเองเข้าไม่ได้
   const first = visibleNav(can, {
     shiftEnabled: !!settings.shiftEnabled,
     staffEnabled: enabled,
     quickServiceEnabled: !!settings.quickServiceEnabled,
+    tableOrderEnabled: !!settings.tableOrderEnabled,
   }).find((i) => i.to !== '/')
   return <Navigate to={first?.to ?? '/pos'} replace />
 }

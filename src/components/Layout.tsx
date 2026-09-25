@@ -25,12 +25,19 @@ interface NavItem {
   perm: PermissionKey
   end?: boolean
   /** แสดงเฉพาะเมื่อเปิดใช้ฟีเจอร์นั้น */
-  requires?: 'shift' | 'staff' | 'quickService'
+  requires?: 'shift' | 'staff' | 'quickService' | 'tableOrder'
 }
 
 const NAV: NavItem[] = [
   { to: '/', label: 'หน้าหลัก', icon: 'home', perm: 'reports', end: true },
   { to: '/pos', label: 'ขายหน้าร้าน', icon: 'cart', perm: 'sell' },
+  {
+    to: '/table',
+    label: 'ออเดอร์ที่โต๊ะ',
+    icon: 'pencil',
+    perm: 'tableOrder',
+    requires: 'tableOrder',
+  },
   {
     to: '/kitchen',
     label: 'จอครัว / คิว',
@@ -55,12 +62,18 @@ const NAV: NavItem[] = [
 /** เมนูที่ผู้ใช้คนนี้เข้าถึงได้ (ใช้ทั้งกับแถบนำทางและการเด้งหน้าแรก) */
 export function visibleNav(
   can: (p: PermissionKey) => boolean,
-  opts: { shiftEnabled: boolean; staffEnabled: boolean; quickServiceEnabled?: boolean },
+  opts: {
+    shiftEnabled: boolean
+    staffEnabled: boolean
+    quickServiceEnabled?: boolean
+    tableOrderEnabled?: boolean
+  },
 ): NavItem[] {
   return NAV.filter((item) => {
     if (item.requires === 'shift' && !opts.shiftEnabled) return false
     if (item.requires === 'staff' && !opts.staffEnabled) return false
     if (item.requires === 'quickService' && !opts.quickServiceEnabled) return false
+    if (item.requires === 'tableOrder' && !opts.tableOrderEnabled) return false
     return can(item.perm)
   })
 }
@@ -177,6 +190,7 @@ export default function Layout() {
     shiftEnabled,
     staffEnabled,
     quickServiceEnabled: !!settings.quickServiceEnabled,
+    tableOrderEnabled: !!settings.tableOrderEnabled,
   })
 
   /* ===== ล็อกหน้าจออัตโนมัติเมื่อไม่มีการใช้งาน ===== */

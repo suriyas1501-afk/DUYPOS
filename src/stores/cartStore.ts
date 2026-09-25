@@ -64,11 +64,119 @@ const lineKey = (
 ) =>
   `${it.productId}|${it.unitName ?? ''}|${(it.options ?? []).join(',')}|${it.note ?? ''}|${it.listPrice}`
 
-/** จัดจำนวนให้ถูกชนิด — สินค้าปกติเป็นจำนวนเต็ม, สินค้าชั่งน้ำหนักทศนิยม 2 ตำแหน่ง */
-const normalizeQty = (qty: number, allowDecimal: boolean) => {
+/**
+ * จัดจำนวนให้ถูกชนิด — สินค้าปกติเป็นจำนวนเต็ม, สินค้าชั่งน้ำหนักทศนิยม 2 ตำแหน่ง
+ * export เพราะใบสั่งที่โต๊ะ (tableOrderStore) ต้องใช้กติกาเดียวกันเป๊ะ
+ */
+export const normalizeQty = (qty: number, allowDecimal: boolean) => {
   const n = Number.isFinite(qty) ? qty : 0
   const clamped = Math.min(Math.max(0, n), MAX_LINE_QTY)
   return allowDecimal ? r2(clamped) : Math.round(clamped)
+}
+
+/** ตัวเลือกตอนเพิ่มสินค้า — ใช้ร่วมกันทั้งตะกร้าเคาน์เตอร์และใบสั่งที่โต๊ะ */
+export interface AddProductOpts {
+  options?: string[]
+  priceDelta?: number
+  note?: string
+  qty?: number
+  /** หน่วยที่เลือกขาย (ไม่ระบุ = หน่วยฐาน) */
+  unit?: ProductUnit
+}
+
+/**
+ * เพิ่มสินค้าลงรายการ — **ฟังก์ชันบริสุทธิ์ ไม่แตะ store**
+ *
+ * แยกออกมาเพื่อให้ตะกร้าหน้าเคาน์เตอร์ (cartStore) กับใบสั่งที่โต๊ะ (tableOrderStore)
+ * คิดราคาด้วยโค้ดชุดเดียวกันเป๊ะ — ราคาส่ง / ตัวคูณหน่วย / ส่วนเพิ่มตัวเลือก /
+ * การรวมบรรทัดที่เหมือนกัน ถ้าปล่อยให้แต่ละที่คิดเอง ยอดสองทางจะเพี้ยนกันเมื่อไรก็ได้
+ */
+export function addProductToItems(
+  items: CartItem[],
+  p: Product,
+  opts?: AddProductOpts,
+): CartItem[] {
+  const options = opts?.options
+  const note = opts?.note?.trim() || undefined
+  const unit = opts?.unit
+  const delta = opts?.priceDelta ?? 0
+  const listPrice = r2((unit ? unit.price : p.price) + delta)
+  const unitFactor = unit ? unit.factor : 1
+  const unitName = unit?.name
+  const allowDecimalQty = !!p.allowDecimalQty && unitFactor === 1
+  const wholesalePrice = !unit && p.wholesalePrice != null ? r2(p.wholesalePrice + delta) : undefined
+  const wholesaleMinQty = !unit ? p.wholesaleMinQty : undefined
+
+  const key = lineKey({ productId: p.id!, unitName, options, note, listPrice })
+  const addQty = normalizeQty(opts?.qty ?? 1, allowDecimalQty) || (allowDecimalQty ? 0.01 : 1)
+
+  if (items.some((it) => it.key === key)) {
+    return items.map((it) => {
+      if (it.key !== key) return it
+      const qty = normalizeQty(it.qty + addQty, it.allowDecimalQty)
+      return { ...it, qty, price: effectivePrice(it, qty) }
+    })
+  }
+
+  const base = {
+    key,
+    productId: p.id!,
+    categoryId: p.categoryId,
+    name: p.name,
+    listPrice,
+    wholesalePrice,
+    wholesaleMinQty,
+    cost: r2(p.cost * unitFactor),
+    unitName,
+    unitFactor,
+    allowDecimalQty,
+    options,
+    note,
+    manualDiscount: 0,
+    trackStock: p.trackStock,
+    stock: p.stock,
+  }
+  return [...items, { ...base, qty: addQty, price: effectivePrice(base, addQty) }]
+}
+
+/** สิ่งที่แก้ได้ในบรรทัดที่ลงรายการไปแล้ว */
+export type ItemPatch = Partial<Pick<CartItem, 'qty' | 'manualDiscount' | 'note'>>
+
+/**
+ * แก้บรรทัดที่ลงรายการไปแล้ว — **ฟังก์ชันบริสุทธิ์ ไม่แตะ store**
+ *
+ * แยกออกมาด้วยเหตุผลเดียวกับ addProductToItems(): ตะกร้าเคาน์เตอร์กับใบสั่งที่โต๊ะ
+ * ต้องจัดการ "คีย์รวมบรรทัด" เหมือนกันเป๊ะ ถ้าที่ใดที่หนึ่งลืมคำนวณคีย์ใหม่หลังแก้โน้ต
+ * สินค้าตัวเดิมที่กดเพิ่มทีหลังจะถูกรวมเข้าบรรทัดที่มีโน้ต แล้วครัวได้คำสั่งผิด
+ */
+export function updateItemInItems(items: CartItem[], key: string, patch: ItemPatch): CartItem[] {
+  const idx = items.findIndex((it) => it.key === key)
+  if (idx < 0) return items
+  const it = items[idx]
+  const merged: CartItem = { ...it, ...patch }
+  if (patch.qty != null) {
+    merged.qty = normalizeQty(patch.qty, it.allowDecimalQty)
+    merged.price = effectivePrice(it, merged.qty)
+  }
+  // โน้ตเป็นส่วนหนึ่งของคีย์ — ต้องคำนวณใหม่ ไม่งั้นสินค้าตัวเดิม (ไม่มีโน้ต)
+  // ที่กดเพิ่มทีหลังจะถูกรวมเข้าบรรทัดนี้และติดโน้ตไปด้วย (สลิปครัวผิด)
+  if (it.productId !== 0) merged.key = lineKey(merged)
+  if (merged.key !== it.key) {
+    const twinIdx = items.findIndex((x, i) => i !== idx && x.key === merged.key)
+    if (twinIdx >= 0) {
+      // ซ้ำกับอีกบรรทัดที่เหมือนกันทุกอย่างแล้ว → รวมเข้าด้วยกัน
+      const twin = items[twinIdx]
+      const qty = normalizeQty(twin.qty + merged.qty, twin.allowDecimalQty)
+      const combined: CartItem = {
+        ...twin,
+        qty,
+        price: effectivePrice(twin, qty),
+        manualDiscount: r2(twin.manualDiscount + merged.manualDiscount),
+      }
+      return items.map((x, i) => (i === twinIdx ? combined : x)).filter((_, i) => i !== idx)
+    }
+  }
+  return items.map((x, i) => (i === idx ? merged : x))
 }
 
 interface CartState {
@@ -138,57 +246,7 @@ export const useCart = create<CartState>()(
       discountApprovedByName: undefined,
 
       addProduct(p, opts) {
-        const options = opts?.options
-        const note = opts?.note?.trim() || undefined
-        const unit = opts?.unit
-        const delta = opts?.priceDelta ?? 0
-        const listPrice = r2((unit ? unit.price : p.price) + delta)
-        const unitFactor = unit ? unit.factor : 1
-        const unitName = unit?.name
-        const allowDecimalQty = !!p.allowDecimalQty && unitFactor === 1
-        const wholesalePrice =
-          !unit && p.wholesalePrice != null ? r2(p.wholesalePrice + delta) : undefined
-        const wholesaleMinQty = !unit ? p.wholesaleMinQty : undefined
-
-        const key = lineKey({ productId: p.id!, unitName, options, note, listPrice })
-        const addQty = normalizeQty(opts?.qty ?? 1, allowDecimalQty) || (allowDecimalQty ? 0.01 : 1)
-
-        set((s) => {
-          const found = s.items.find((it) => it.key === key)
-          if (found) {
-            return {
-              items: s.items.map((it) => {
-                if (it.key !== key) return it
-                const qty = normalizeQty(it.qty + addQty, it.allowDecimalQty)
-                return { ...it, qty, price: effectivePrice(it, qty) }
-              }),
-            }
-          }
-          const base = {
-            key,
-            productId: p.id!,
-            categoryId: p.categoryId,
-            name: p.name,
-            listPrice,
-            wholesalePrice,
-            wholesaleMinQty,
-            cost: r2(p.cost * unitFactor),
-            unitName,
-            unitFactor,
-            allowDecimalQty,
-            options,
-            note,
-            manualDiscount: 0,
-            trackStock: p.trackStock,
-            stock: p.stock,
-          }
-          const item: CartItem = {
-            ...base,
-            qty: addQty,
-            price: effectivePrice(base, addQty),
-          }
-          return { items: [...s.items, item] }
-        })
+        set((s) => ({ items: addProductToItems(s.items, p, opts) }))
       },
 
       addCustomItem(name, price, qty) {
@@ -225,39 +283,7 @@ export const useCart = create<CartState>()(
       },
 
       updateItem(key, patch) {
-        set((s) => {
-          const idx = s.items.findIndex((it) => it.key === key)
-          if (idx < 0) return {}
-          const it = s.items[idx]
-          const merged: CartItem = { ...it, ...patch }
-          if (patch.qty != null) {
-            merged.qty = normalizeQty(patch.qty, it.allowDecimalQty)
-            merged.price = effectivePrice(it, merged.qty)
-          }
-          // โน้ตเป็นส่วนหนึ่งของคีย์ — ต้องคำนวณใหม่ ไม่งั้นสินค้าตัวเดิม (ไม่มีโน้ต)
-          // ที่กดเพิ่มทีหลังจะถูกรวมเข้าบรรทัดนี้และติดโน้ตไปด้วย (สลิปครัวผิด)
-          if (it.productId !== 0) merged.key = lineKey(merged)
-          if (merged.key !== it.key) {
-            const twinIdx = s.items.findIndex((x, i) => i !== idx && x.key === merged.key)
-            if (twinIdx >= 0) {
-              // ซ้ำกับอีกบรรทัดที่เหมือนกันทุกอย่างแล้ว → รวมเข้าด้วยกัน
-              const twin = s.items[twinIdx]
-              const qty = normalizeQty(twin.qty + merged.qty, twin.allowDecimalQty)
-              const combined: CartItem = {
-                ...twin,
-                qty,
-                price: effectivePrice(twin, qty),
-                manualDiscount: r2(twin.manualDiscount + merged.manualDiscount),
-              }
-              return {
-                items: s.items
-                  .map((x, i) => (i === twinIdx ? combined : x))
-                  .filter((_, i) => i !== idx),
-              }
-            }
-          }
-          return { items: s.items.map((x, i) => (i === idx ? merged : x)) }
-        })
+        set((s) => ({ items: updateItemInItems(s.items, key, patch) }))
       },
 
       removeItem(key) {

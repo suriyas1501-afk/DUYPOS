@@ -1,6 +1,11 @@
 import { useState } from 'react'
 import type { Product, ProductUnit } from '../../db/types'
-import { effectivePrice, MAX_LINE_QTY, useCart } from '../../stores/cartStore'
+import {
+  effectivePrice,
+  MAX_LINE_QTY,
+  useCart,
+  type AddProductOpts,
+} from '../../stores/cartStore'
 import { baht, r2 } from '../../lib/format'
 import { Badge, Button, Field, Icon, Input, Modal, Textarea } from '../../components/ui'
 import QtyStepper from './QtyStepper'
@@ -24,11 +29,18 @@ const PICK_BTN = (active: boolean) =>
 export default function OptionModal({
   product,
   lockedUnit,
+  onAdd,
   onClose,
 }: {
   product: Product
   /** หน่วยที่ยิงบาร์โค้ดมา — ล็อกไว้ไม่ให้เปลี่ยน */
   lockedUnit?: ProductUnit
+  /**
+   * ปลายทางที่จะรับสินค้า — ไม่ระบุ = ตะกร้าหน้าเคาน์เตอร์
+   * ใบสั่งที่โต๊ะส่งของตัวเองมา เพื่อให้ตรรกะเลือกหน่วย/จำนวน/ตัวเลือก
+   * เป็นโค้ดชุดเดียวกันทั้งสองทาง ไม่ต้องทำ UI ซ้ำ
+   */
+  onAdd?: (product: Product, opts: AddProductOpts) => void
   onClose: () => void
 }) {
   const groups = product.options ?? []
@@ -83,7 +95,9 @@ export default function OptionModal({
   const confirm = () => {
     if (!canConfirm) return
     const labels = groups.map((g, i) => g.choices[sel[i]]?.label ?? '').filter((l) => l !== '')
-    useCart.getState().addProduct(product, { options: labels, priceDelta, note, qty, unit })
+    const opts: AddProductOpts = { options: labels, priceDelta, note, qty, unit }
+    if (onAdd) onAdd(product, opts)
+    else useCart.getState().addProduct(product, opts)
     onClose()
   }
 

@@ -300,6 +300,11 @@ export default function Settings() {
     String(settings.kitchenAlertMinutes ?? 10),
   )
   const [quickBusy, setQuickBusy] = useState(false)
+
+  // ----- รับออเดอร์ที่โต๊ะ (มือถือพนักงาน) -----
+  const [tableOrderEnabled, setTableOrderEnabled] = useState(settings.tableOrderEnabled ?? false)
+  const [tableCount, setTableCount] = useState(String(settings.tableCount ?? 20))
+  const [tableBusy, setTableBusy] = useState(false)
   /** ยืนยันก่อนปิดด่านตรวจสลิป (ปิดแล้วเสี่ยงทำอาหารทิ้งจากสลิปปลอม) */
   const [verifyOffOpen, setVerifyOffOpen] = useState(false)
 
@@ -379,6 +384,8 @@ export default function Settings() {
     setRequirePaymentVerify(settings.requirePaymentVerify ?? true)
     setKitchenAutoPrint(settings.kitchenAutoPrint ?? true)
     setKitchenAlertMinutes(String(settings.kitchenAlertMinutes ?? 10))
+    setTableOrderEnabled(settings.tableOrderEnabled ?? false)
+    setTableCount(String(settings.tableCount ?? 20))
     setAutoLockMinutes(String(settings.autoLockMinutes ?? 0))
     setShiftEnabled(settings.shiftEnabled ?? false)
     setRequireShiftToSell(settings.requireShiftToSell ?? false)
@@ -523,6 +530,30 @@ export default function Settings() {
       toast.success('บันทึกการตั้งค่าบริการด่วนแล้ว')
     } finally {
       setQuickBusy(false)
+    }
+  }
+
+  // ----- รับออเดอร์ที่โต๊ะ -----
+
+  const saveTableOrder = async () => {
+    if (tableBusy) return
+    const n = Math.floor(toNum(tableCount))
+    const valid = n >= 1 && n <= 200
+    if (tableOrderEnabled && !valid) {
+      toast.error('จำนวนโต๊ะต้องอยู่ระหว่าง 1 ถึง 200')
+      return
+    }
+    setTableBusy(true)
+    try {
+      // ปิดสวิตช์อยู่ = ช่องจำนวนโต๊ะถูก disabled แก้ไม่ได้
+      // ห้ามเขียนทับด้วยค่าเริ่มต้นเงียบๆ ไม่งั้นร้าน 40 โต๊ะจะเหลือ 20 โดยไม่มีใครรู้
+      await db.settings.update(1, {
+        tableOrderEnabled,
+        ...(valid ? { tableCount: n } : {}),
+      })
+      toast.success('บันทึกการตั้งค่าออเดอร์ที่โต๊ะแล้ว')
+    } finally {
+      setTableBusy(false)
     }
   }
 
@@ -1124,6 +1155,57 @@ export default function Settings() {
 
             <div className="mt-5 flex justify-end">
               <Button icon="check" disabled={quickBusy} onClick={() => void saveQuickService()}>
+                บันทึก
+              </Button>
+            </div>
+          </Card>
+
+          {/* ===== 5.1 รับออเดอร์ที่โต๊ะ ===== */}
+          <Card title={<CardTitle icon="pencil">รับออเดอร์ที่โต๊ะ (มือถือพนักงาน)</CardTitle>}>
+            <div className="flex flex-col gap-1">
+              <Toggle
+                checked={tableOrderEnabled}
+                onChange={setTableOrderEnabled}
+                label="เปิดใช้การรับออเดอร์ที่โต๊ะ"
+              />
+              <span className="text-xs leading-relaxed text-slate-400">
+                เปิดแล้วจะมีเมนู "ออเดอร์ที่โต๊ะ" ให้พนักงานถือมือถือเดินรับออเดอร์
+                เลือกโต๊ะ กดรายการ แล้วสรุปยอด{' '}
+                <span className="font-medium text-slate-600">
+                  ตอนนี้ทำได้ถึงขั้นสรุปยอดเท่านั้น
+                </span>{' '}
+                ส่วนการกาง QR ให้ลูกค้าจ่าย ถ่ายรูปสลิป และส่งเข้าเครื่องกลาง ยังสร้างไม่เสร็จ
+              </span>
+            </div>
+
+            <div
+              className={`mt-4 grid grid-cols-1 gap-4 border-t border-slate-100 pt-4 sm:grid-cols-2 ${
+                tableOrderEnabled ? '' : 'opacity-50'
+              }`}
+            >
+              <Field label="จำนวนโต๊ะ" hint="โต๊ะจะถูกตั้งชื่อเป็น 1 ถึงเลขนี้ (สูงสุด 200)">
+                <Input
+                  value={tableCount}
+                  inputMode="numeric"
+                  disabled={!tableOrderEnabled}
+                  onChange={(e) => setTableCount(e.target.value)}
+                />
+              </Field>
+            </div>
+
+            {tableOrderEnabled && (
+              <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2.5 text-xs leading-relaxed text-sky-800">
+                <Icon name="alert" size={16} className="mt-0.5 shrink-0" />
+                <span>
+                  ที่โต๊ะจะยังไม่มีส่วนลด คูปอง แลกแต้ม และใบกำกับภาษี —
+                  ลูกค้าที่ขอต้องไปที่เคาน์เตอร์ · การรับเงินสดที่โต๊ะปิดไว้
+                  เพราะยังไม่มีขั้นตอนนำเงินส่งลิ้นชัก ถ้าเปิดตอนนี้ปิดกะจะขาดทุกวัน
+                </span>
+              </div>
+            )}
+
+            <div className="mt-5 flex justify-end">
+              <Button icon="check" disabled={tableBusy} onClick={() => void saveTableOrder()}>
                 บันทึก
               </Button>
             </div>

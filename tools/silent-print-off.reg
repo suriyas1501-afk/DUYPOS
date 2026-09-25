@@ -1,0 +1,12 @@
+Windows Registry Editor Version 5.00
+
+; ===================================================================
+; POS - undo silent printing
+; Double-click this file as Administrator, then RESTART Chrome.
+; Chrome goes back to showing the normal print preview window.
+; ===================================================================
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome]
+"SilentPrintingEnabled"=-
+"PrintPreviewUseSystemDefaultPrinter"=-
+"PrintHeaderFooter"=-

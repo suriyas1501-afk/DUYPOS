@@ -1,0 +1,19 @@
+Windows Registry Editor Version 5.00
+
+; ===================================================================
+; POS - silent printing (Chrome policy)
+; Double-click this file as Administrator, then RESTART Chrome.
+; Requires Chrome 144 or newer. Check chrome://policy after restart.
+; To undo: run silent-print-off.reg
+; ===================================================================
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome]
+
+; Print immediately to the default printer, no print preview window.
+"SilentPrintingEnabled"=dword:00000001
+
+; Always use the Windows default printer instead of "last used printer".
+"PrintPreviewUseSystemDefaultPrinter"=dword:00000001
+
+; Do not print the URL / page number header and footer on the slip.
+"PrintHeaderFooter"=dword:00000000

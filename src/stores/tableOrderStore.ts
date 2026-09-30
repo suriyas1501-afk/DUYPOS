@@ -205,6 +205,15 @@ interface TableOrderState {
    * ซึ่งเป็นการประกาศชัดว่าต้องสร้าง QR ใหม่
    */
   locked: boolean
+  /**
+   * เข้าหน้ารับเงินแล้ว (ขั้นที่ 4) — ต่อจาก locked
+   * แยกจาก locked เพราะขั้นที่ 3 (ทบทวนยอด) กับขั้นที่ 4 (กาง QR + ถ่ายรูป) คนละหน้า
+   */
+  payStarted: boolean
+  /** รูปสลิปที่แนบไว้ (อยู่ในตาราง slipQueue ไม่ใช่ในดราฟต์นี้) */
+  slipId?: string
+  /** เหตุผลที่ไม่มีรูปสลิป เช่น จ่ายเงินสด / กล้องใช้ไม่ได้ */
+  slipMissingReason?: string
 
   /** เริ่มออเดอร์ใหม่ที่โต๊ะนี้ (ทิ้งดราฟต์เดิมถ้ามี) */
   start(tableLabel: string): void
@@ -220,8 +229,24 @@ interface TableOrderState {
   removeItem(key: string): void
   /** ล็อกยอด (กดสรุปรายการ) */
   lock(): void
-  /** กลับไปแก้รายการ */
+  /**
+   * กลับไปแก้รายการ
+   *
+   * **ทำไม่ได้ถ้ามีรูปสลิปแนบอยู่แล้ว** — สลิปคือหลักฐานว่าเงินเข้ามาแล้ว
+   * ถ้าปล่อยให้ย้อนไปแก้รายการเงียบๆ ยอดจะไม่ตรงกับเงินที่รับไปจริง
+   * ต้องถอนหลักฐานออกก่อนด้วย clearSlip() ซึ่งเป็นการกดที่ตั้งใจ
+   */
   unlock(): void
+  /** เข้าหน้ารับเงิน (ขั้นที่ 4) */
+  startPay(): void
+  /** ย้อนจากหน้ารับเงินกลับไปหน้าสรุป (ทำไม่ได้ถ้ามีสลิปแนบแล้ว) */
+  backToSummary(): void
+  /** แนบรูปสลิป (แทนใบเดิมถ้ามี — ผู้เรียกต้องลบไฟล์เก่าเอง) */
+  attachSlip(slipId: string): void
+  /** ถอนรูปสลิปออก (ผู้เรียกต้องลบไฟล์เอง) */
+  clearSlip(): void
+  /** บันทึกว่าไม่มีสลิปเพราะอะไร (ค่าว่าง = ล้างเหตุผล) */
+  setSlipMissing(reason: string): void
   clear(): void
 }
 
@@ -231,6 +256,9 @@ const EMPTY = {
   startedAt: undefined,
   items: [] as CartItem[],
   locked: false,
+  payStarted: false,
+  slipId: undefined,
+  slipMissingReason: undefined,
 }
 
 export const useTableOrder = create<TableOrderState>()(
@@ -240,11 +268,10 @@ export const useTableOrder = create<TableOrderState>()(
 
       start(tableLabel) {
         set({
+          ...EMPTY,
           ticketUid: newTicketUid(),
           tableLabel: tableLabel.trim() || TAKEAWAY_LABEL,
           startedAt: Date.now(),
-          items: [],
-          locked: false,
         })
       },
 
@@ -292,7 +319,34 @@ export const useTableOrder = create<TableOrderState>()(
       },
 
       unlock() {
-        set({ locked: false })
+        // มีหลักฐานการจ่ายแล้ว = ห้ามย้อนไปแก้ยอดเงียบๆ
+        if (get().slipId != null) return
+        set({ locked: false, payStarted: false })
+      },
+
+      startPay() {
+        if (!get().locked) return
+        set({ payStarted: true })
+      },
+
+      backToSummary() {
+        if (get().slipId != null) return
+        set({ payStarted: false })
+      },
+
+      attachSlip(slipId) {
+        set({ slipId, slipMissingReason: undefined })
+      },
+
+      clearSlip() {
+        set({ slipId: undefined })
+      },
+
+      setSlipMissing(reason) {
+        const trimmed = reason.trim() || undefined
+        // ระบุเหตุผลว่าไม่มีสลิป = ถอนสลิปออก (สองอย่างนี้อยู่ด้วยกันไม่ได้)
+        // แต่การล้างเหตุผลทิ้งต้องไม่ไปลบสลิปที่แนบอยู่
+        set(trimmed ? { slipMissingReason: trimmed, slipId: undefined } : { slipMissingReason: undefined })
       },
 
       clear() {
@@ -312,6 +366,22 @@ export const useTableOrder = create<TableOrderState>()(
 /** มีดราฟต์ค้างอยู่ไหม (ใช้ถามผู้ใช้ว่าจะทำต่อหรือทิ้ง) */
 export const hasTableDraft = (s: Pick<TableOrderState, 'tableLabel' | 'items'>) =>
   s.tableLabel != null && s.items.length > 0
+
+/**
+ * ดราฟต์นี้ไปถึงขั้นรับเงินแล้วหรือยัง
+ *
+ * ใช้ตัดสินว่า UI จะเสนอปุ่ม "ทิ้งใบสั่ง" แบบธรรมดาได้ไหม
+ * 'paid' = มีหลักฐานการจ่ายแนบอยู่ = เงินเข้ามาแล้ว ห้ามเสนอให้ทิ้งลอยๆ
+ * ต้องบอกยอดที่รับไปด้วย และห้ามลบร่องรอยในตาราง slipQueue ทิ้ง
+ */
+export type DraftPayStage = 'none' | 'paying' | 'paid'
+
+export const draftPayStage = (
+  s: Pick<TableOrderState, 'payStarted' | 'slipId' | 'slipMissingReason'>,
+): DraftPayStage => {
+  if (s.slipId != null || (s.slipMissingReason?.trim() ?? '') !== '') return 'paid'
+  return s.payStarted ? 'paying' : 'none'
+}
 
 /** จำนวนชิ้นรวมในใบสั่ง (สินค้าชั่งน้ำหนักนับตามน้ำหนัก) */
 export const tableItemCount = (items: CartItem[]) => items.reduce((n, it) => n + it.qty, 0)

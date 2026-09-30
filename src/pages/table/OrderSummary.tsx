@@ -1,11 +1,8 @@
-import { useMemo } from 'react'
-import { useLiveQuery } from 'dexie-react-hooks'
-import { db } from '../../db/db'
 import type { Settings } from '../../db/types'
 import type { CartItem } from '../../stores/cartStore'
-import { computeTotals } from '../../lib/totals'
+import type { Totals } from '../../lib/totals'
 import { baht } from '../../lib/format'
-import { Button, Icon } from '../../components/ui'
+import { Button } from '../../components/ui'
 import OrderLines from './OrderLines'
 
 /* =========================================================
@@ -24,31 +21,22 @@ export default function OrderSummary({
   tableLabel,
   items,
   settings,
+  totals,
   onBack,
+  onPay,
   onDiscard,
 }: {
   tableLabel: string
   items: CartItem[]
   settings: Settings
+  /** ยอดที่คิดมาจากพ่อ — ตัวเดียวกับที่หน้ารับเงินฝังลง QR (ห้ามคิดซ้ำที่นี่) */
+  totals: Totals
   /** กลับไปแก้รายการ (ปลดล็อกยอด) */
   onBack: () => void
+  /** ไปหน้ารับเงิน (ขั้นที่ 4) */
+  onPay: () => void
   onDiscard: () => void
 }) {
-  const promos = useLiveQuery(() => db.promotions.toArray(), []) ?? []
-
-  const totals = useMemo(
-    () =>
-      computeTotals({
-        items,
-        promos,
-        settings,
-        billDiscountType: 'amount',
-        billDiscountValue: 0,
-        redeemPoints: 0,
-      }),
-    [items, promos, settings],
-  )
-
   const promoDiscount = totals.promoLineDiscount + totals.promoBillDiscount
 
   return (
@@ -94,19 +82,10 @@ export default function OrderSummary({
           </dl>
         </div>
 
-        {/* ขั้นที่ 4-6 ยังไม่ได้สร้าง — บอกตรงๆ ดีกว่าให้ปุ่มที่กดแล้วไม่เกิดอะไร */}
-        <div className="mt-3 flex items-start gap-2 rounded-2xl bg-amber-50 px-3.5 py-3 ring-1 ring-amber-200">
-          <Icon name="alert" size={16} className="mt-0.5 shrink-0 text-amber-600" />
-          <div className="text-xs leading-relaxed text-amber-900">
-            <span className="font-medium">ขั้นถัดไปยังสร้างไม่เสร็จ</span> — การกาง QR ให้ลูกค้า
-            สแกนจ่าย ถ่ายรูปสลิป และส่งเข้าเครื่องกลาง เป็นงานก้อนต่อไป
-            ตอนนี้ทดสอบได้ถึงขั้นสรุปยอดนี้
-          </div>
-        </div>
       </div>
 
       <div className="shrink-0 space-y-2 border-t border-slate-200 bg-white p-3">
-        <Button size="lg" icon="qr" className="w-full" disabled>
+        <Button size="lg" icon="qr" className="w-full" onClick={onPay}>
           กาง QR ให้ลูกค้าสแกนจ่าย
         </Button>
         <div className="flex gap-2">

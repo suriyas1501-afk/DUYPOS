@@ -1,17 +1,24 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
+import { db } from '../db/db'
 import { Link } from 'react-router-dom'
 import { useSettings } from '../db/hooks'
 import {
   DEFAULT_TABLE_COUNT,
+  draftPayStage,
   draftPersistence,
   hasTableDraft,
   tableItemCount,
   useTableOrder,
 } from '../stores/tableOrderStore'
+import { computeTotals } from '../lib/totals'
+import { baht } from '../lib/format'
+import { pruneSlipQueue } from '../lib/slipPhoto'
 import { Button, ConfirmDialog, Icon, Modal, Spinner, toast } from '../components/ui'
 import TablePicker from './table/TablePicker'
 import ItemPicker from './table/ItemPicker'
 import OrderSummary from './table/OrderSummary'
+import PayAndSlip from './table/PayAndSlip'
 
 /* =========================================================
    รับออเดอร์ที่โต๊ะ — ขั้นที่ 1-3 ของ TABLE-ORDER-PLAN.md §18
@@ -41,6 +48,14 @@ export default function TableOrder() {
     lock,
     unlock,
     clear,
+    payStarted,
+    slipId,
+    slipMissingReason,
+    startPay,
+    backToSummary,
+    attachSlip,
+    clearSlip,
+    setSlipMissing,
   } = draft
 
   /**
@@ -59,6 +74,32 @@ export default function TableOrder() {
     warnedPersist.current = true
     toast.error('เก็บใบสั่งค้างไว้ในเครื่องไม่ได้ — อย่าสลับไปแอปอื่น ให้ทำจนจบทีเดียว')
   }, [persistOk])
+
+  /* ล้างรูปสลิปเก่าออกจากเครื่อง — ยังไม่มีตัวส่งขึ้นคลาวด์ในเฟสนี้
+     ถ้าไม่ล้าง รูปจะกองจนพื้นที่เครื่องเต็ม ซึ่งเป็นสาเหตุที่ทำให้เก็บดราฟต์ไม่ได้ */
+  useEffect(() => {
+    void pruneSlipQueue(settings?.slipKeepDays ?? 90)
+  }, [settings?.slipKeepDays])
+
+  /**
+   * ยอดที่ใช้ทั้งหน้าสรุปและหน้ารับเงิน — **คิดที่เดียวตรงนี้**
+   * ถ้าสองหน้าคิดกันเอง ยอดที่อ่านให้ลูกค้ากับยอดที่ฝังใน QR อาจไม่ตรงกัน
+   */
+  const promos = useLiveQuery(() => db.promotions.toArray(), []) ?? []
+  const totals = useMemo(
+    () =>
+      settings
+        ? computeTotals({
+            items,
+            promos,
+            settings,
+            billDiscountType: 'amount',
+            billDiscountValue: 0,
+            redeemPoints: 0,
+          })
+        : null,
+    [items, promos, settings],
+  )
 
   /** ถามครั้งเดียวตอนเข้าหน้า ห้ามเงียบ (§17 ข้อ 2) */
   const asked = useRef(false)
@@ -104,10 +145,21 @@ export default function TableOrder() {
     )
   }
 
+  /** ดราฟต์นี้รับเงินไปแล้วหรือยัง — ใช้คุมข้อความและปุ่มที่ทำลายข้อมูล */
+  const payStage = draftPayStage({ payStarted, slipId, slipMissingReason })
+
   const discard = () => {
+    // **ห้ามลบแถวใน slipQueue** — แถวนั้นพกเลขโต๊ะกับยอดเงินไว้ และในเฟสนี้
+    // (ยังไม่มีตัวอัปโหลดขึ้นคลาวด์) มันคือสำเนาเดียวที่บอกได้ว่ารับเงินโต๊ะไหนไปเท่าไร
+    // ตาม TABLE-ORDER-PLAN.md §17 ข้อ 3 มันต้องรอด "แม้ใบสั่งหาย" ไม่ใช่ถูกลบไปพร้อมกัน
+    // การเก็บกวาดระยะยาวเป็นหน้าที่ของ pruneSlipQueue ตามอายุ
     clear()
     setDiscardAsk(false)
-    toast.success('ทิ้งใบสั่งแล้ว')
+    toast.success(
+      payStage === 'paid'
+        ? 'ทิ้งใบสั่งแล้ว — รูปสลิปยังเก็บไว้เป็นหลักฐาน'
+        : 'ทิ้งใบสั่งแล้ว',
+    )
   }
 
   return (
@@ -137,12 +189,29 @@ export default function TableOrder() {
           }}
           onCancel={picking ? () => setPicking(false) : undefined}
         />
-      ) : locked ? (
+      ) : locked && payStarted ? (
+        <PayAndSlip
+          tableLabel={tableLabel}
+          items={items}
+          payable={totals?.payable ?? 0}
+          settings={settings}
+          slipId={slipId}
+          slipMissingReason={slipMissingReason}
+          onAttachSlip={attachSlip}
+          onClearSlip={clearSlip}
+          onSetSlipMissing={setSlipMissing}
+          // มีหลักฐานการจ่ายแล้วห้ามย้อน — ไม่ส่งปุ่มกลับไปให้เลย
+          onBack={slipId == null ? backToSummary : undefined}
+          onDiscard={() => setDiscardAsk(true)}
+        />
+      ) : locked && totals ? (
         <OrderSummary
           tableLabel={tableLabel}
           items={items}
           settings={settings}
+          totals={totals}
           onBack={unlock}
+          onPay={startPay}
           onDiscard={() => setDiscardAsk(true)}
         />
       ) : (
@@ -173,17 +242,23 @@ export default function TableOrder() {
         size="sm"
         footer={
           <>
-            <Button
-              variant="secondary"
-              icon="trash"
-              className="text-rose-600"
-              onClick={() => {
-                setResumeAsk(null)
-                setDiscardAsk(true)
-              }}
-            >
-              ทิ้งแล้วเริ่มใหม่
-            </Button>
+            {/* รับเงินไปแล้วห้ามเสนอปุ่มทิ้งในกล่องนี้ — กล่องนี้เด้งทับหน้ารับเงินได้
+                ทุกครั้งที่เปิดแอปใหม่ ถ้ามีปุ่มทิ้งลอยๆ พนักงานจะเข้าใจว่าเป็นออเดอร์
+                ที่ยังไม่ได้เก็บเงินแล้วกดทิ้ง = เงินเข้าแล้วแต่ไม่มีบิล
+                การทิ้งต้องไปทำที่หน้ารับเงินซึ่งเห็นยอดและสถานะสลิปครบ */}
+            {payStage !== 'paid' && (
+              <Button
+                variant="secondary"
+                icon="trash"
+                className="text-rose-600"
+                onClick={() => {
+                  setResumeAsk(null)
+                  setDiscardAsk(true)
+                }}
+              >
+                ทิ้งแล้วเริ่มใหม่
+              </Button>
+            )}
             <Button icon="check" onClick={() => setResumeAsk(null)}>
               ทำต่อ
             </Button>
@@ -195,6 +270,16 @@ export default function TableOrder() {
             ? `โต๊ะ ${resumeAsk.label} มี ${resumeAsk.count.toLocaleString('th-TH')} รายการที่ยังไม่ได้ส่ง`
             : ''}
         </p>
+        {payStage === 'paid' && (
+          <div className="mt-2.5 flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-900 ring-1 ring-amber-200">
+            <Icon name="alert" size={15} className="mt-0.5 shrink-0" />
+            <span>
+              <span className="font-medium">ใบนี้รับเงินไปแล้ว ฿{baht(totals?.payable ?? 0)}</span> —
+              {slipId != null ? ' มีรูปสลิปแนบอยู่' : ` บันทึกว่า ${slipMissingReason}`} ให้กดทำต่อ
+              แล้วจัดการที่หน้ารับเงิน
+            </span>
+          </div>
+        )}
       </Modal>
 
       <ConfirmDialog
@@ -202,9 +287,11 @@ export default function TableOrder() {
         danger
         title="ทิ้งใบสั่งนี้"
         message={
-          tableLabel
-            ? `รายการของโต๊ะ ${tableLabel} จะหายทั้งหมด กู้คืนไม่ได้ ต้องการทิ้งไหม?`
-            : ''
+          tableLabel == null
+            ? ''
+            : payStage === 'paid'
+              ? `โต๊ะ ${tableLabel} รับเงินไปแล้ว ฿${baht(totals?.payable ?? 0)} — ทิ้งใบสั่งแล้วจะไม่มีบิลของยอดนี้ในระบบ (รูปสลิปยังเก็บไว้เป็นหลักฐาน) ต้องการทิ้งไหม?`
+              : `รายการของโต๊ะ ${tableLabel} จะหายทั้งหมด กู้คืนไม่ได้ ต้องการทิ้งไหม?`
         }
         confirmLabel="ทิ้งใบสั่ง"
         onConfirm={discard}

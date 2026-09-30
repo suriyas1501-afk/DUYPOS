@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Product, Settings } from '../db/types'
 import { DEFAULT_SETTINGS } from '../db/db'
 import { computeTotals } from '../lib/totals'
-import { TAKEAWAY_LABEL, tableLabels, useTableOrder } from './tableOrderStore'
+import { TAKEAWAY_LABEL, draftPayStage, tableLabels, useTableOrder } from './tableOrderStore'
 
 /* =========================================================
    ใบสั่งที่โต๊ะ — ขั้นที่ 1-3
@@ -387,5 +387,167 @@ describe('ใบสั่งที่โต๊ะ — localStorage เขีย�
     expect(st().tableLabel).toBe('7')
     expect(st().items).toHaveLength(2)
     expect(mod.draftPersistence.ok).toBe(false)
+  })
+})
+
+/* =========================================================
+   ขั้นที่ 4 — หน้ารับเงินและหลักฐานการจ่าย
+
+   กติกาที่ต้องตรึง: มีหลักฐานการจ่ายแล้ว **ห้ามย้อนไปแก้ยอดเงียบๆ**
+   เพราะยอดที่แก้จะไม่ตรงกับเงินที่รับไปจริง (และ QR ที่กางไปแล้วฝังยอดเก่า)
+   ========================================================= */
+
+describe('ใบสั่งที่โต๊ะ — ขั้นที่ 4 รับเงินและแนบสลิป', () => {
+  beforeEach(() => {
+    s().clear()
+    s().start('5')
+    s().addProduct(product())
+  })
+
+  it('เข้าหน้ารับเงินได้เฉพาะเมื่อล็อกยอดแล้ว', () => {
+    s().startPay()
+    expect(s().payStarted).toBe(false) // ยังไม่ล็อก = เข้าไม่ได้
+
+    s().lock()
+    s().startPay()
+    expect(s().payStarted).toBe(true)
+  })
+
+  it('ยังไม่มีสลิป → ย้อนกลับหน้าสรุปและกลับไปแก้รายการได้', () => {
+    s().lock()
+    s().startPay()
+
+    s().backToSummary()
+    expect(s().payStarted).toBe(false)
+
+    s().unlock()
+    expect(s().locked).toBe(false)
+  })
+
+  it('แนบสลิปแล้ว → ย้อนกลับไม่ได้ทั้งสองทาง (กันยอดไม่ตรงเงินที่รับไปจริง)', () => {
+    s().lock()
+    s().startPay()
+    s().attachSlip('s-abc')
+
+    s().backToSummary()
+    expect(s().payStarted).toBe(true) // ยังอยู่หน้ารับเงิน
+
+    s().unlock()
+    expect(s().locked).toBe(true) // ยังล็อกยอดอยู่
+
+    // ถอนหลักฐานออกก่อน (การกดที่ตั้งใจ) จึงย้อนได้
+    s().clearSlip()
+    s().backToSummary()
+    expect(s().payStarted).toBe(false)
+    s().unlock()
+    expect(s().locked).toBe(false)
+  })
+
+  it('ระบุว่าไม่มีสลิป = ถอนสลิปออก และสองอย่างนี้อยู่ด้วยกันไม่ได้', () => {
+    s().lock()
+    s().startPay()
+    s().attachSlip('s-abc')
+
+    s().setSlipMissing('ลูกค้าจ่ายเงินสด')
+    expect(s().slipId).toBeUndefined()
+    expect(s().slipMissingReason).toBe('ลูกค้าจ่ายเงินสด')
+
+    // แนบรูปทีหลัง = ล้างเหตุผลทิ้ง
+    s().attachSlip('s-xyz')
+    expect(s().slipMissingReason).toBeUndefined()
+    expect(s().slipId).toBe('s-xyz')
+  })
+
+  it('ล้างเหตุผลทิ้ง ต้องไม่ไปลบสลิปที่แนบอยู่', () => {
+    s().lock()
+    s().startPay()
+    s().attachSlip('s-keep')
+
+    s().setSlipMissing('   ') // ช่องว่างล้วน = ล้างเหตุผล
+    expect(s().slipMissingReason).toBeUndefined()
+    expect(s().slipId).toBe('s-keep') // ห้ามหาย
+  })
+
+  it('เริ่มออเดอร์โต๊ะใหม่ = ล้างสถานะขั้นที่ 4 ทั้งหมด', () => {
+    s().lock()
+    s().startPay()
+    s().attachSlip('s-abc')
+    s().setSlipMissing('')
+
+    s().start('9')
+
+    expect(s().tableLabel).toBe('9')
+    expect(s().locked).toBe(false)
+    expect(s().payStarted).toBe(false)
+    expect(s().slipId).toBeUndefined()
+    expect(s().slipMissingReason).toBeUndefined()
+    expect(s().items).toEqual([])
+  })
+})
+
+/* =========================================================
+   สถานะการรับเงินของดราฟต์
+
+   ใช้ตัดสินว่า UI จะเสนอปุ่ม "ทิ้งใบสั่ง" ลอยๆ ได้ไหม
+   เคยพลาด: กล่อง "มีใบสั่งค้างอยู่" เด้งทับหน้ารับเงินทุกครั้งที่เปิดแอปใหม่
+   พร้อมปุ่มทิ้งที่ไม่บอกว่าบิลนี้รับเงินไปแล้ว → พนักงานกดทิ้ง
+   = เงินเข้าบัญชีแล้วแต่ไม่มีบิล ไม่มีรูป ไม่มีเลขโต๊ะเหลืออยู่ที่ไหน
+   ========================================================= */
+
+describe('draftPayStage — ดราฟต์ไปถึงขั้นรับเงินแล้วหรือยัง', () => {
+  it('ยังไม่เข้าหน้ารับเงิน = none', () => {
+    expect(draftPayStage({ payStarted: false })).toBe('none')
+  })
+
+  it('เข้าหน้ารับเงินแล้วแต่ยังไม่มีหลักฐาน = paying (ทิ้งได้ตามปกติ)', () => {
+    expect(draftPayStage({ payStarted: true })).toBe('paying')
+  })
+
+  it('มีรูปสลิปแนบ = paid', () => {
+    expect(draftPayStage({ payStarted: true, slipId: 's-1' })).toBe('paid')
+  })
+
+  it('ระบุเหตุผลว่าไม่มีสลิป ก็ถือว่ารับเงินแล้ว = paid', () => {
+    expect(draftPayStage({ payStarted: true, slipMissingReason: 'ลูกค้าจ่ายเงินสด' })).toBe('paid')
+  })
+
+  it('เหตุผลเป็นช่องว่างล้วน ไม่นับเป็นหลักฐาน', () => {
+    expect(draftPayStage({ payStarted: true, slipMissingReason: '   ' })).toBe('paying')
+  })
+
+  it('มีหลักฐานแต่ payStarted หลุดหาย ยังต้องเป็น paid (หลักฐานสำคัญกว่าธง)', () => {
+    expect(draftPayStage({ payStarted: false, slipId: 's-1' })).toBe('paid')
+  })
+})
+
+describe('ทิ้งใบสั่ง — ต้องไม่ลบร่องรอยการรับเงิน', () => {
+  beforeEach(() => {
+    s().clear()
+  })
+
+  it('clear() ไม่แตะตาราง slipQueue เลย (ร่องรอยต้องรอดแม้ใบสั่งหาย)', async () => {
+    const { saveSlip } = await import('../lib/slipPhoto')
+    const { db } = await import('../db/db')
+    await db.slipQueue.clear()
+
+    s().start('5')
+    s().addProduct(product())
+    s().lock()
+    s().startPay()
+    const slipId = await saveSlip({
+      blob: new Blob(['x'], { type: 'image/jpeg' }),
+      tableLabel: '5',
+      amount: 650,
+    })
+    s().attachSlip(slipId)
+
+    s().clear()
+
+    // ดราฟต์หายแล้ว แต่แถวที่บอกว่ารับเงินโต๊ะไหนไปเท่าไร ต้องยังอยู่
+    expect(s().tableLabel).toBeUndefined()
+    const row = await db.slipQueue.get(slipId)
+    expect(row).toBeDefined()
+    expect(row?.tableLabel).toBe('5')
+    expect(row?.amount).toBe(650)
   })
 })

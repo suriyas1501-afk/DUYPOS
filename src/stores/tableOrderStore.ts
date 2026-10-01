@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
-import type { Product } from '../db/types'
+import type { PaymentMethod, Product } from '../db/types'
 import {
   addProductToItems,
   effectivePrice,
@@ -212,8 +212,13 @@ interface TableOrderState {
   payStarted: boolean
   /** รูปสลิปที่แนบไว้ (อยู่ในตาราง slipQueue ไม่ใช่ในดราฟต์นี้) */
   slipId?: string
-  /** เหตุผลที่ไม่มีรูปสลิป เช่น จ่ายเงินสด / กล้องใช้ไม่ได้ */
+  /** เหตุผลที่ไม่มีรูปสลิป เช่น กล้องใช้ไม่ได้ */
   slipMissingReason?: string
+  /**
+   * ลูกค้าจ่ายด้วยอะไร — ต้องบันทึกไว้ ไม่ใช่เดาจากข้อความเหตุผล
+   * เพราะเงินสดกับโอนเข้าลิ้นชักคนละทาง (ดู cashCustody ใน §13)
+   */
+  payMethod: PaymentMethod
 
   /** เริ่มออเดอร์ใหม่ที่โต๊ะนี้ (ทิ้งดราฟต์เดิมถ้ามี) */
   start(tableLabel: string): void
@@ -247,6 +252,8 @@ interface TableOrderState {
   clearSlip(): void
   /** บันทึกว่าไม่มีสลิปเพราะอะไร (ค่าว่าง = ล้างเหตุผล) */
   setSlipMissing(reason: string): void
+  /** ลูกค้าจ่ายด้วยอะไร */
+  setPayMethod(method: PaymentMethod): void
   clear(): void
 }
 
@@ -259,6 +266,8 @@ const EMPTY = {
   payStarted: false,
   slipId: undefined,
   slipMissingReason: undefined,
+  // ค่าเริ่มต้นเป็นโอน เพราะทางหลักของโหมดนี้คือกาง QR ให้ลูกค้าสแกน
+  payMethod: 'transfer' as PaymentMethod,
 }
 
 export const useTableOrder = create<TableOrderState>()(
@@ -340,6 +349,10 @@ export const useTableOrder = create<TableOrderState>()(
 
       clearSlip() {
         set({ slipId: undefined })
+      },
+
+      setPayMethod(method) {
+        set({ payMethod: method })
       },
 
       setSlipMissing(reason) {

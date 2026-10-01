@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import QRCode from 'qrcode'
 import { db, DEFAULT_SETTINGS } from '../db/db'
+import { getDeviceRole, setDeviceRole } from '../lib/tableOrderIntake'
 import { useCurrentShift, useSettings } from '../db/hooks'
 import type { BusinessMode, Sale, SaleItem, Settings as AppSettings } from '../db/types'
 import {
@@ -305,6 +306,8 @@ export default function Settings() {
   const [tableOrderEnabled, setTableOrderEnabled] = useState(settings.tableOrderEnabled ?? false)
   const [tableCount, setTableCount] = useState(String(settings.tableCount ?? 20))
   const [tableBusy, setTableBusy] = useState(false)
+  /** บทบาทของ 'เครื่องนี้' — เก็บใน appState ไม่ใช่ settings เพราะเป็นค่าของเครื่อง ไม่ใช่ของร้าน */
+  const deviceRole = useLiveQuery(() => getDeviceRole(), [])
   /** ยืนยันก่อนปิดด่านตรวจสลิป (ปิดแล้วเสี่ยงทำอาหารทิ้งจากสลิปปลอม) */
   const [verifyOffOpen, setVerifyOffOpen] = useState(false)
 
@@ -1192,6 +1195,59 @@ export default function Settings() {
                 />
               </Field>
             </div>
+
+            {tableOrderEnabled && (
+              <div className="mt-4 border-t border-slate-100 pt-4">
+                <div className="text-sm font-medium text-slate-700">เครื่องนี้ทำหน้าที่อะไร</div>
+                <p className="mt-0.5 text-xs leading-relaxed text-slate-400">
+                  ค่านี้เป็นของ <span className="font-medium text-slate-600">เครื่องนี้เครื่องเดียว</span>{' '}
+                  ไม่ติดไปกับไฟล์สำรองและไม่ถูกทับตอนนำเข้าข้อมูล ·{' '}
+                  <span className="font-medium text-slate-600">เครื่องกลางต้องมีเครื่องเดียว</span>{' '}
+                  เพราะเป็นผู้ออกเลขบิล ถ้าตั้งสองเครื่องเลขบิลจะซ้ำกัน
+                </p>
+                <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {(
+                    [
+                      {
+                        role: 'central' as const,
+                        title: 'เครื่องกลาง (ออกบิล)',
+                        hint: 'คอมหน้าเคาน์เตอร์ — รับใบสั่งแล้วออกบิล ตัดสต็อก ผูกกะ',
+                      },
+                      {
+                        role: 'handheld' as const,
+                        title: 'มือถือรับออเดอร์',
+                        hint: 'เครื่องที่พนักงานถือเดินรับออเดอร์ที่โต๊ะ',
+                      },
+                    ]
+                  ).map(({ role, title, hint }) => (
+                    <button
+                      key={role}
+                      type="button"
+                      onClick={() => void setDeviceRole(role)}
+                      className={`cursor-pointer rounded-xl border-2 px-3.5 py-2.5 text-left transition-colors ${
+                        deviceRole === role
+                          ? 'border-emerald-500 bg-emerald-50'
+                          : 'border-slate-200 bg-white hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="text-sm font-medium text-slate-800">{title}</div>
+                      <div className="mt-0.5 text-xs leading-relaxed text-slate-500">{hint}</div>
+                    </button>
+                  ))}
+                </div>
+                {deviceRole == null && (
+                  <p className="mt-2 text-xs font-medium text-amber-700">
+                    ยังไม่ได้เลือก — ปุ่ม "ส่งเข้าเครื่องกลาง" ที่หน้ารับออเดอร์จะกดไม่ได้จนกว่าจะเลือก
+                  </p>
+                )}
+                {deviceRole === 'handheld' && (
+                  <p className="mt-2 text-xs leading-relaxed text-amber-700">
+                    เครื่องนี้เป็นมือถือรับออเดอร์ — การส่งใบสั่งข้ามเครื่องต้องรอการต่อคลาวด์
+                    ตอนนี้จึงออกบิลที่เครื่องนี้ไม่ได้ (กันเลขบิลซ้ำกับเครื่องกลาง)
+                  </p>
+                )}
+              </div>
+            )}
 
             {tableOrderEnabled && (
               <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2.5 text-xs leading-relaxed text-sky-800">

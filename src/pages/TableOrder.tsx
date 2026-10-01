@@ -14,6 +14,13 @@ import {
 import { computeTotals } from '../lib/totals'
 import { baht } from '../lib/format'
 import { pruneSlipQueue } from '../lib/slipPhoto'
+import {
+  TICKET_SCHEMA_VERSION,
+  canBillHere,
+  getDeviceRole,
+  receiveTicket,
+} from '../lib/tableOrderIntake'
+import { getActor } from '../lib/actor'
 import { Button, ConfirmDialog, Icon, Modal, Spinner, toast } from '../components/ui'
 import TablePicker from './table/TablePicker'
 import ItemPicker from './table/ItemPicker'
@@ -51,11 +58,14 @@ export default function TableOrder() {
     payStarted,
     slipId,
     slipMissingReason,
+    payMethod,
+    ticketUid,
     startPay,
     backToSummary,
     attachSlip,
     clearSlip,
     setSlipMissing,
+    setPayMethod,
   } = draft
 
   /**
@@ -100,6 +110,12 @@ export default function TableOrder() {
         : null,
     [items, promos, settings],
   )
+
+  /* บทบาทของเครื่องนี้ — ยังไม่มีช่องทางส่งข้ามเครื่อง ดังนั้นออกบิลได้เฉพาะเมื่อ
+     เครื่องที่รับออเดอร์กับเครื่องที่ออกบิลเป็นเครื่องเดียวกัน (ผู้เขียนบิลคนเดียว) */
+  const deviceRole = useLiveQuery(() => getDeviceRole(), [])
+  const billGate = canBillHere(deviceRole)
+  const [sending, setSending] = useState(false)
 
   /** ถามครั้งเดียวตอนเข้าหน้า ห้ามเงียบ (§17 ข้อ 2) */
   const asked = useRef(false)
@@ -147,6 +163,51 @@ export default function TableOrder() {
 
   /** ดราฟต์นี้รับเงินไปแล้วหรือยัง — ใช้คุมข้อความและปุ่มที่ทำลายข้อมูล */
   const payStage = draftPayStage({ payStarted, slipId, slipMissingReason })
+
+  /**
+   * ยืนยันเงินเข้า + ส่งใบสั่งให้ออกบิล (ขั้นที่ 5-6 รวมเป็นปุ่มเดียวตามที่ตกลงไว้ §17)
+   *
+   * ส่งไม่สำเร็จ = **ห้ามล้างดราฟต์** ต้องคาไว้ให้กดซ้ำได้
+   * กดซ้ำไม่เกิดบิล 2 ใบเพราะ ticketUid เป็น primary key ของ orderTickets
+   */
+  const send = async () => {
+    if (sending || !settings || !totals || tableLabel == null || ticketUid == null) return
+    if (!billGate.ok) return
+    setSending(true)
+    try {
+      const res = await receiveTicket(
+        {
+          ticketUid,
+          schemaVersion: TICKET_SCHEMA_VERSION,
+          tableLabel,
+          items,
+          payments: [{ method: payMethod, amount: totals.payable }],
+          paidAmount: totals.payable,
+          actor: getActor(),
+          verifiedAt: Date.now(),
+          slipId,
+          slipMissingReason,
+        },
+        settings,
+        promos,
+      )
+      if (!res.ok) {
+        toast.error(res.reason)
+        return
+      }
+      // ออกบิลแล้วจึงล้างดราฟต์ได้ (รูปสลิปยังอยู่ในเครื่อง ผูกกับบิลผ่าน slipId)
+      clear()
+      toast.success(
+        res.duplicate
+          ? `ใบสั่งนี้ออกบิลไปแล้ว — บิล ${res.sale.receiptNo}`
+          : `ออกบิล ${res.sale.receiptNo} แล้ว`,
+      )
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'ออกบิลไม่สำเร็จ กรุณาลองใหม่')
+    } finally {
+      setSending(false)
+    }
+  }
 
   const discard = () => {
     // **ห้ามลบแถวใน slipQueue** — แถวนั้นพกเลขโต๊ะกับยอดเงินไว้ และในเฟสนี้
@@ -200,6 +261,18 @@ export default function TableOrder() {
           onAttachSlip={attachSlip}
           onClearSlip={clearSlip}
           onSetSlipMissing={setSlipMissing}
+          payMethod={payMethod}
+          onSetPayMethod={setPayMethod}
+          // ส่งได้เฉพาะเมื่อเครื่องนี้เป็นเครื่องกลาง และมีหลักฐานการจ่ายแล้ว
+          onSend={billGate.ok && payStage === 'paid' ? () => void send() : undefined}
+          sendBlockReason={
+            !billGate.ok
+              ? billGate.reason
+              : payStage !== 'paid'
+                ? 'ต้องแนบรูปสลิป หรือระบุเหตุผลที่ไม่มีสลิปก่อน'
+                : undefined
+          }
+          sending={sending}
           // มีหลักฐานการจ่ายแล้วห้ามย้อน — ไม่ส่งปุ่มกลับไปให้เลย
           onBack={slipId == null ? backToSummary : undefined}
           onDiscard={() => setDiscardAsk(true)}

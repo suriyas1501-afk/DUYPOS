@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Settings } from '../../db/types'
+import type { PaymentMethod, Settings } from '../../db/types'
 import type { CartItem } from '../../stores/cartStore'
 import { deleteSlip, loadSlip, resizePhoto, saveSlip } from '../../lib/slipPhoto'
 import { baht } from '../../lib/format'
@@ -28,6 +28,11 @@ export default function PayAndSlip({
   settings,
   slipId,
   slipMissingReason,
+  payMethod,
+  onSetPayMethod,
+  onSend,
+  sendBlockReason,
+  sending,
   onAttachSlip,
   onClearSlip,
   onSetSlipMissing,
@@ -41,6 +46,13 @@ export default function PayAndSlip({
   settings: Settings
   slipId?: string
   slipMissingReason?: string
+  payMethod: PaymentMethod
+  onSetPayMethod: (m: PaymentMethod) => void
+  /** ส่งใบสั่งเข้าเครื่องกลางเพื่อออกบิล — undefined = เครื่องนี้ออกบิลไม่ได้ */
+  onSend?: () => void
+  /** เหตุผลที่ส่งไม่ได้ (ใช้คู่กับ onSend ที่เป็น undefined) */
+  sendBlockReason?: string
+  sending?: boolean
   onAttachSlip: (slipId: string) => void
   onClearSlip: () => void
   onSetSlipMissing: (reason: string) => void
@@ -131,6 +143,36 @@ export default function PayAndSlip({
               ฿{baht(payable)}
             </span>
           </div>
+        </div>
+
+        {/* ===== ลูกค้าจ่ายด้วยอะไร ===== */}
+        <div className="rounded-2xl bg-white p-3.5 shadow-sm">
+          <div className="text-sm font-medium text-slate-700">ลูกค้าจ่ายด้วย</div>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            {([
+              { m: 'transfer' as PaymentMethod, label: 'สแกน QR / โอน' },
+              { m: 'cash' as PaymentMethod, label: 'เงินสด' },
+            ]).map(({ m, label }) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => onSetPayMethod(m)}
+                className={`cursor-pointer rounded-xl border-2 px-3 py-2.5 text-sm font-medium transition-colors ${
+                  payMethod === m
+                    ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
+                    : 'border-slate-200 bg-white text-slate-600'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {payMethod === 'cash' && !settings.tableCashEnabled && (
+            <p className="mt-2 text-xs leading-relaxed text-amber-700">
+              ร้านนี้ปิด "รับเงินสดที่โต๊ะ" ไว้ — เงินก้อนนี้จะถูกนับว่าอยู่ในลิ้นชักทันที
+              ถ้ายังไม่เอาเข้าลิ้นชัก ปิดกะจะขาด
+            </p>
+          )}
         </div>
 
         {/* ===== QR พร้อมเพย์ฝังยอด ===== */}
@@ -236,24 +278,27 @@ export default function PayAndSlip({
           )}
         </div>
 
-        {/* ขั้นที่ 5-6 ยังไม่ได้สร้าง */}
-        <div className="flex items-start gap-2 rounded-2xl bg-amber-50 px-3.5 py-3 ring-1 ring-amber-200">
-          <Icon name="alert" size={16} className="mt-0.5 shrink-0 text-amber-600" />
-          <div className="text-xs leading-relaxed text-amber-900">
-            <span className="font-medium">ขั้นถัดไปยังสร้างไม่เสร็จ</span> — ปุ่มยืนยันเงินเข้า
-            และส่งเข้าเครื่องกลาง (พร้อมการส่งรูปขึ้นคลาวด์) เป็นงานก้อนต่อไป
-            ตอนนี้รูปถูกเก็บไว้ในเครื่องนี้เท่านั้น
-          </div>
-        </div>
       </div>
 
       {/* ===== แถบล่าง ===== */}
       <div className="shrink-0 space-y-2 border-t border-slate-200 bg-white p-3">
-        <div title="ต้องรอขั้นที่ 5">
-          <Button size="lg" icon="check" className="w-full" disabled>
-            ยืนยันเงินเข้า + ส่งเข้าเครื่องกลาง
+        <div title={onSend ? undefined : sendBlockReason}>
+          <Button
+            size="lg"
+            icon="check"
+            className="w-full"
+            disabled={onSend == null || busy || !!sending}
+            onClick={() => onSend?.()}
+          >
+            {sending ? 'กำลังออกบิล…' : 'ยืนยันเงินเข้า + ส่งเข้าเครื่องกลาง'}
           </Button>
         </div>
+        {onSend == null && sendBlockReason && (
+          <div className="flex items-start gap-1.5 text-xs font-medium text-amber-700">
+            <Icon name="alert" size={14} className="mt-px shrink-0" />
+            <span>{sendBlockReason}</span>
+          </div>
+        )}
         {onBack ? (
           <div className="flex gap-2">
             <Button variant="secondary" icon="undo" className="flex-1" onClick={onBack}>

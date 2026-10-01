@@ -59,6 +59,7 @@ export default function TableOrder() {
     slipId,
     slipMissingReason,
     payMethod,
+    lockedPayable,
     ticketUid,
     startPay,
     backToSummary,
@@ -162,7 +163,7 @@ export default function TableOrder() {
   }
 
   /** ดราฟต์นี้รับเงินไปแล้วหรือยัง — ใช้คุมข้อความและปุ่มที่ทำลายข้อมูล */
-  const payStage = draftPayStage({ payStarted, slipId, slipMissingReason })
+  const payStage = draftPayStage({ payStarted, slipId, slipMissingReason, payMethod })
 
   /**
    * ยืนยันเงินเข้า + ส่งใบสั่งให้ออกบิล (ขั้นที่ 5-6 รวมเป็นปุ่มเดียวตามที่ตกลงไว้ §17)
@@ -171,7 +172,8 @@ export default function TableOrder() {
    * กดซ้ำไม่เกิดบิล 2 ใบเพราะ ticketUid เป็น primary key ของ orderTickets
    */
   const send = async () => {
-    if (sending || !settings || !totals || tableLabel == null || ticketUid == null) return
+    if (sending || !settings || tableLabel == null || ticketUid == null) return
+    if (lockedPayable == null) return
     if (!billGate.ok) return
     setSending(true)
     try {
@@ -181,8 +183,9 @@ export default function TableOrder() {
           schemaVersion: TICKET_SCHEMA_VERSION,
           tableLabel,
           items,
-          payments: [{ method: payMethod, amount: totals.payable }],
-          paidAmount: totals.payable,
+          payments: [{ method: payMethod, amount: lockedPayable }],
+          // ยอดที่ลูกค้าจ่ายไปจริง = ยอดที่ฝังใน QR ตอนขั้นที่ 4 = ยอดที่ล็อกไว้ขั้นที่ 3
+          paidAmount: lockedPayable,
           actor: getActor(),
           verifiedAt: Date.now(),
           slipId,
@@ -254,7 +257,9 @@ export default function TableOrder() {
         <PayAndSlip
           tableLabel={tableLabel}
           items={items}
-          payable={totals?.payable ?? 0}
+          // **ยอดที่ล็อกไว้ตอนขั้นที่ 3 เท่านั้น** ห้ามใช้ยอดที่คิดสดใหม่
+          // ไม่งั้นใบสั่งที่ค้างข้ามช่วงโปรโมชันจะกาง QR ยอดใหม่ที่ไม่ตรงกับบิล
+          payable={lockedPayable ?? 0}
           settings={settings}
           slipId={slipId}
           slipMissingReason={slipMissingReason}
@@ -295,7 +300,7 @@ export default function TableOrder() {
           onSetQty={setQty}
           onSetNote={setNote}
           onRemove={removeItem}
-          onSummary={lock}
+          onSummary={() => totals && lock(totals.payable)}
           onChangeTable={() => setPicking(true)}
           onDiscard={() => setDiscardAsk(true)}
         />
@@ -347,7 +352,7 @@ export default function TableOrder() {
           <div className="mt-2.5 flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-900 ring-1 ring-amber-200">
             <Icon name="alert" size={15} className="mt-0.5 shrink-0" />
             <span>
-              <span className="font-medium">ใบนี้รับเงินไปแล้ว ฿{baht(totals?.payable ?? 0)}</span> —
+              <span className="font-medium">ใบนี้รับเงินไปแล้ว ฿{baht(lockedPayable ?? 0)}</span> —
               {slipId != null ? ' มีรูปสลิปแนบอยู่' : ` บันทึกว่า ${slipMissingReason}`} ให้กดทำต่อ
               แล้วจัดการที่หน้ารับเงิน
             </span>
@@ -363,7 +368,7 @@ export default function TableOrder() {
           tableLabel == null
             ? ''
             : payStage === 'paid'
-              ? `โต๊ะ ${tableLabel} รับเงินไปแล้ว ฿${baht(totals?.payable ?? 0)} — ทิ้งใบสั่งแล้วจะไม่มีบิลของยอดนี้ในระบบ (รูปสลิปยังเก็บไว้เป็นหลักฐาน) ต้องการทิ้งไหม?`
+              ? `โต๊ะ ${tableLabel} รับเงินไปแล้ว ฿${baht(lockedPayable ?? 0)} — ทิ้งใบสั่งแล้วจะไม่มีบิลของยอดนี้ในระบบ (รูปสลิปยังเก็บไว้เป็นหลักฐาน) ต้องการทิ้งไหม?`
               : `รายการของโต๊ะ ${tableLabel} จะหายทั้งหมด กู้คืนไม่ได้ ต้องการทิ้งไหม?`
         }
         confirmLabel="ทิ้งใบสั่ง"

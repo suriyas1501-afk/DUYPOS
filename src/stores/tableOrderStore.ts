@@ -9,6 +9,7 @@ import {
   type AddProductOpts,
   type CartItem,
 } from './cartStore'
+import { r2 } from '../lib/format'
 
 /* =========================================================
    ใบสั่งที่โต๊ะ (โหมดรับออเดอร์ที่โต๊ะด้วยมือถือ) — ขั้นที่ 1-3
@@ -210,6 +211,15 @@ interface TableOrderState {
    * แยกจาก locked เพราะขั้นที่ 3 (ทบทวนยอด) กับขั้นที่ 4 (กาง QR + ถ่ายรูป) คนละหน้า
    */
   payStarted: boolean
+  /**
+   * ยอดที่ถูกล็อกตอนกดสรุปรายการ (ขั้นที่ 3)
+   *
+   * **ยอดนี้คือยอดเดียวที่ถูกต้อง** ตั้งแต่ขั้นที่ 3 ไปจนออกบิล — QR ฝังยอดนี้
+   * ลูกค้าจ่ายยอดนี้ และบิลต้องเป็นยอดนี้
+   * ห้ามคิดยอดสดใหม่ตอนกดส่ง เพราะโปรโมชันกรองตามเวลาจริง (promotions.ts ใช้ Date.now())
+   * ใบสั่งที่ค้างข้ามช่วงโปรฯ จะได้ยอดใหม่ที่ไม่ตรงกับเงินที่ลูกค้าโอนมาแล้ว
+   */
+  lockedPayable?: number
   /** รูปสลิปที่แนบไว้ (อยู่ในตาราง slipQueue ไม่ใช่ในดราฟต์นี้) */
   slipId?: string
   /** เหตุผลที่ไม่มีรูปสลิป เช่น กล้องใช้ไม่ได้ */
@@ -232,8 +242,8 @@ interface TableOrderState {
   setQty(key: string, qty: number): void
   setNote(key: string, note: string): void
   removeItem(key: string): void
-  /** ล็อกยอด (กดสรุปรายการ) */
-  lock(): void
+  /** ล็อกยอด (กดสรุปรายการ) — ต้องส่งยอดที่คิดได้ ณ ตอนนั้นมาเก็บไว้ */
+  lock(payable: number): void
   /**
    * กลับไปแก้รายการ
    *
@@ -264,6 +274,7 @@ const EMPTY = {
   items: [] as CartItem[],
   locked: false,
   payStarted: false,
+  lockedPayable: undefined,
   slipId: undefined,
   slipMissingReason: undefined,
   // ค่าเริ่มต้นเป็นโอน เพราะทางหลักของโหมดนี้คือกาง QR ให้ลูกค้าสแกน
@@ -321,16 +332,17 @@ export const useTableOrder = create<TableOrderState>()(
         set((s) => ({ items: s.items.filter((it) => it.key !== key) }))
       },
 
-      lock() {
+      lock(payable) {
         // ใบสั่งเปล่าล็อกไม่ได้ — ไม่มียอดให้ฝังใน QR
         if (get().items.length === 0) return
-        set({ locked: true })
+        if (!Number.isFinite(payable) || payable < 0) return
+        set({ locked: true, lockedPayable: r2(payable) })
       },
 
       unlock() {
         // มีหลักฐานการจ่ายแล้ว = ห้ามย้อนไปแก้ยอดเงียบๆ
         if (get().slipId != null) return
-        set({ locked: false, payStarted: false })
+        set({ locked: false, payStarted: false, lockedPayable: undefined })
       },
 
       startPay() {
@@ -390,8 +402,11 @@ export const hasTableDraft = (s: Pick<TableOrderState, 'tableLabel' | 'items'>) 
 export type DraftPayStage = 'none' | 'paying' | 'paid'
 
 export const draftPayStage = (
-  s: Pick<TableOrderState, 'payStarted' | 'slipId' | 'slipMissingReason'>,
+  s: Pick<TableOrderState, 'payStarted' | 'slipId' | 'slipMissingReason' | 'payMethod'>,
 ): DraftPayStage => {
+  // เงินสด = เห็นเงินอยู่ในมือ ถือว่าตรวจแล้วในตัว (กติกาเดียวกับ src/lib/quickService.ts)
+  // สลิปมีไว้สำหรับการโอน ซึ่งเป็นช่องทางที่ปลอมหลักฐานได้
+  if (s.payMethod === 'cash') return 'paid'
   if (s.slipId != null || (s.slipMissingReason?.trim() ?? '') !== '') return 'paid'
   return s.payStarted ? 'paying' : 'none'
 }

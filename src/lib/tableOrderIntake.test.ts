@@ -66,6 +66,22 @@ describe('ออกบิลจากใบสั่งที่โต๊ะ', (
     expect(s.paymentVerifiedAt).toBeTypeOf('number')
   })
 
+  it('บิลที่อ่านกลับจากฐานข้อมูลมีฟิลด์โหมดโต๊ะครบ (ไม่ใช่แค่ค่าที่คืนในหน่วยความจำ)', async () => {
+    const res = await receiveTicket(ticket(), settings, noPromos)
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+
+    // สิ่งที่ลูกค้าจะเห็นในประวัติการขายคือแถวในฐานข้อมูล ไม่ใช่อ็อบเจกต์ที่ฟังก์ชันคืน
+    const saved = await db.sales.get(res.sale.id!)
+    expect(saved?.orderChannel).toBe('table')
+    expect(saved?.tableLabel).toBe('5')
+    expect(saved?.ticketUid).toBe('t-test-1')
+    expect(saved?.slipId).toBe('s-slip-1')
+    expect(saved?.staffName).toBe(WAITER.name)
+    expect(saved?.paymentVerifiedByName).toBe(WAITER.name)
+    expect(saved?.total).toBe(60)
+  })
+
   it('ตัดสต็อกจริง 1 รอบ', async () => {
     await receiveTicket(ticket(), settings, noPromos)
     expect(await stockOf(productId)).toBe(99)
@@ -219,5 +235,62 @@ describe('เงินในลิ้นชักและกะ', () => {
     expect(res.ok).toBe(true)
     if (!res.ok) return
     expect(res.sale.cashCustody).toBeUndefined()
+  })
+})
+
+/* =========================================================
+   ส่งซ้ำตอนยอดเพี้ยน — เส้นทางที่ทำลายด่านกันบิลซ้ำ
+
+   เคยพัง: ทางปฏิเสธ put() ทับทั้งแถว ทำให้แถวที่เป็น 'billed' เสีย saleId
+   แล้วด่านกันบิลซ้ำก็ผ่านฉลุย → ออกบิลใบที่สองกับเงินก้อนเดียว
+   ========================================================= */
+
+describe('ใบสั่งที่ออกบิลแล้ว ต้องกันไว้ทุกกรณี', () => {
+  it('ส่งซ้ำตอนยอดเพี้ยน ต้องไม่ทำลายแถวที่ออกบิลแล้ว และไม่เกิดบิลใบที่สอง', async () => {
+    const first = await receiveTicket(ticket(), settings, noPromos)
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+
+    // ส่งซ้ำด้วยรหัสเดิมแต่ยอดไม่ตรง (เช่นโปรโมชันหมดเวลาระหว่างที่ใบสั่งค้างอยู่)
+    const again = await receiveTicket(ticket({ paidAmount: 50 }), settings, noPromos)
+
+    // ต้องคืนบิลใบเดิม ไม่ใช่ปฏิเสธแล้วทิ้ง saleId
+    expect(again.ok).toBe(true)
+    if (!again.ok) return
+    expect(again.duplicate).toBe(true)
+    expect(again.sale.id).toBe(first.sale.id)
+
+    const row = await db.orderTickets.get('t-test-1')
+    expect(row?.state).toBe('billed')
+    expect(row?.saleId).toBe(first.sale.id)
+
+    // และต้องไม่มีบิลใบที่สอง ไม่ตัดสต็อกรอบที่สอง
+    expect(await db.sales.count()).toBe(1)
+    expect(await stockOf(productId)).toBe(99)
+  })
+
+  it('ส่งซ้ำตอนเวอร์ชันคนละรุ่น ก็ยังคืนบิลใบเดิม', async () => {
+    const first = await receiveTicket(ticket(), settings, noPromos)
+    expect(first.ok).toBe(true)
+
+    const again = await receiveTicket(
+      ticket({ schemaVersion: TICKET_SCHEMA_VERSION + 1 }),
+      settings,
+      noPromos,
+    )
+    expect(again.ok).toBe(true)
+    expect(await db.sales.count()).toBe(1)
+    expect((await db.orderTickets.get('t-test-1'))?.state).toBe('billed')
+  })
+
+  it('ถูกปฏิเสธก่อนออกบิล แล้วส่งซ้ำผิดอีก ต้องคง createdAt เดิม (ใช้ตามเรื่องได้)', async () => {
+    await receiveTicket(ticket({ paidAmount: 50 }), settings, noPromos)
+    const t1 = await db.orderTickets.get('t-test-1')
+    await new Promise((r) => setTimeout(r, 15))
+    await receiveTicket(ticket({ paidAmount: 40 }), settings, noPromos)
+    const t2 = await db.orderTickets.get('t-test-1')
+
+    expect(t2?.state).toBe('rejected')
+    expect(t2?.createdAt).toBe(t1?.createdAt)
   })
 })

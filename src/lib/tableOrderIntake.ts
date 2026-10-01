@@ -107,19 +107,6 @@ export async function receiveTicket(
     redeemPoints: 0,
   })
 
-  const check = validateTicket(ticket, totals.payable)
-  if (!check.ok) {
-    // บันทึกว่าปฏิเสธเพราะอะไร เพื่อให้มือถือรู้และคนมาตามได้
-    await db.orderTickets.put({
-      ticketUid: ticket.ticketUid,
-      state: 'rejected',
-      rejectReason: check.reason,
-      tableLabel: ticket.tableLabel,
-      createdAt: Date.now(),
-    })
-    return { ok: false, reason: check.reason }
-  }
-
   return db.transaction(
     'rw',
     [
@@ -135,15 +122,34 @@ export async function receiveTicket(
     async () => {
       const existing = await db.orderTickets.get(ticket.ticketUid)
 
-      // ส่งซ้ำ: คืนบิลใบเดิม ห้ามออกใบใหม่
-      if (existing?.state === 'billed' && existing.saleId != null) {
-        const sale = await db.sales.get(existing.saleId)
-        if (sale) return { ok: true as const, sale, duplicate: true }
+      /* ===== ด่านกันบิลซ้ำต้องมาก่อนทุกอย่าง =====
+         เดิมตรวจความถูกต้องก่อนแล้วค่อยเช็คซ้ำ ซึ่งพังเพราะทางปฏิเสธ put() ทับทั้งแถว
+         ทำให้แถวที่เป็น 'billed' เสีย saleId ไป แล้วด่านนี้ก็ผ่านฉลุย → ออกบิลใบที่สอง
+         ใบสั่งที่ออกบิลแล้วต้องคืนบิลใบเดิมทันที ไม่ต้องตรวจอะไรอีก */
+      if (existing?.state === 'billed') {
+        if (existing.saleId != null) {
+          const sale = await db.sales.get(existing.saleId)
+          if (sale) return { ok: true as const, sale, duplicate: true }
+        }
         // แถวบอกว่าออกบิลแล้วแต่หาบิลไม่เจอ = ข้อมูลไม่สอดคล้อง ห้ามเดาออกใบใหม่
         return {
           ok: false as const,
           reason: 'ใบสั่งนี้เคยออกบิลแล้วแต่หาบิลไม่พบ — ให้ตรวจที่ประวัติการขายก่อน',
         }
+      }
+
+      const check = validateTicket(ticket, totals.payable)
+      if (!check.ok) {
+        /* บันทึกว่าปฏิเสธเพราะอะไร — **ต้องอยู่ในทรานแซกชันนี้** และห้ามทับแถว 'billed'
+           (ด่านข้างบนคัดกรองไปแล้ว) · คง createdAt เดิมไว้ ไม่งั้นเวลาที่ใช้ตามเรื่องจะเพี้ยน */
+        await db.orderTickets.put({
+          ticketUid: ticket.ticketUid,
+          state: 'rejected',
+          rejectReason: check.reason,
+          tableLabel: ticket.tableLabel,
+          createdAt: existing?.createdAt ?? Date.now(),
+        })
+        return { ok: false as const, reason: check.reason }
       }
 
       const sale = await finalizeSale({

@@ -96,7 +96,7 @@ describe('ใบสั่งที่โต๊ะ — ล็อกยอด (ข
 
   it('ใบสั่งเปล่าล็อกไม่ได้ — ไม่มียอดให้ฝังใน QR', () => {
     s().start('5')
-    s().lock()
+    s().lock(60)
     expect(s().locked).toBe(false)
   })
 
@@ -104,7 +104,7 @@ describe('ใบสั่งที่โต๊ะ — ล็อกยอด (ข
     s().start('5')
     s().addProduct(product())
     const key = s().items[0].key
-    s().lock()
+    s().lock(60)
     expect(s().locked).toBe(true)
 
     s().addProduct(product({ id: 2, name: 'ผัดไทย' }))
@@ -239,7 +239,7 @@ describe('ใบสั่งที่โต๊ะ — ดราฟต์ต้�
   it('ล็อกยอดแล้วสถานะล็อกถูกเซฟด้วย (เปิดใหม่ต้องกลับมาที่หน้าสรุป)', async () => {
     s().start('5')
     s().addProduct(product())
-    s().lock()
+    s().lock(60)
     await flush()
     expect(saved()?.locked).toBe(true)
   })
@@ -408,13 +408,13 @@ describe('ใบสั่งที่โต๊ะ — ขั้นที่ 4 �
     s().startPay()
     expect(s().payStarted).toBe(false) // ยังไม่ล็อก = เข้าไม่ได้
 
-    s().lock()
+    s().lock(60)
     s().startPay()
     expect(s().payStarted).toBe(true)
   })
 
   it('ยังไม่มีสลิป → ย้อนกลับหน้าสรุปและกลับไปแก้รายการได้', () => {
-    s().lock()
+    s().lock(60)
     s().startPay()
 
     s().backToSummary()
@@ -425,7 +425,7 @@ describe('ใบสั่งที่โต๊ะ — ขั้นที่ 4 �
   })
 
   it('แนบสลิปแล้ว → ย้อนกลับไม่ได้ทั้งสองทาง (กันยอดไม่ตรงเงินที่รับไปจริง)', () => {
-    s().lock()
+    s().lock(60)
     s().startPay()
     s().attachSlip('s-abc')
 
@@ -444,7 +444,7 @@ describe('ใบสั่งที่โต๊ะ — ขั้นที่ 4 �
   })
 
   it('ระบุว่าไม่มีสลิป = ถอนสลิปออก และสองอย่างนี้อยู่ด้วยกันไม่ได้', () => {
-    s().lock()
+    s().lock(60)
     s().startPay()
     s().attachSlip('s-abc')
 
@@ -459,7 +459,7 @@ describe('ใบสั่งที่โต๊ะ — ขั้นที่ 4 �
   })
 
   it('ล้างเหตุผลทิ้ง ต้องไม่ไปลบสลิปที่แนบอยู่', () => {
-    s().lock()
+    s().lock(60)
     s().startPay()
     s().attachSlip('s-keep')
 
@@ -469,7 +469,7 @@ describe('ใบสั่งที่โต๊ะ — ขั้นที่ 4 �
   })
 
   it('เริ่มออเดอร์โต๊ะใหม่ = ล้างสถานะขั้นที่ 4 ทั้งหมด', () => {
-    s().lock()
+    s().lock(60)
     s().startPay()
     s().attachSlip('s-abc')
     s().setSlipMissing('')
@@ -496,27 +496,27 @@ describe('ใบสั่งที่โต๊ะ — ขั้นที่ 4 �
 
 describe('draftPayStage — ดราฟต์ไปถึงขั้นรับเงินแล้วหรือยัง', () => {
   it('ยังไม่เข้าหน้ารับเงิน = none', () => {
-    expect(draftPayStage({ payStarted: false })).toBe('none')
+    expect(draftPayStage({ payStarted: false, payMethod: 'transfer' })).toBe('none')
   })
 
   it('เข้าหน้ารับเงินแล้วแต่ยังไม่มีหลักฐาน = paying (ทิ้งได้ตามปกติ)', () => {
-    expect(draftPayStage({ payStarted: true })).toBe('paying')
+    expect(draftPayStage({ payStarted: true, payMethod: 'transfer' })).toBe('paying')
   })
 
   it('มีรูปสลิปแนบ = paid', () => {
-    expect(draftPayStage({ payStarted: true, slipId: 's-1' })).toBe('paid')
+    expect(draftPayStage({ payStarted: true, slipId: 's-1', payMethod: 'transfer' })).toBe('paid')
   })
 
   it('ระบุเหตุผลว่าไม่มีสลิป ก็ถือว่ารับเงินแล้ว = paid', () => {
-    expect(draftPayStage({ payStarted: true, slipMissingReason: 'ลูกค้าจ่ายเงินสด' })).toBe('paid')
+    expect(draftPayStage({ payStarted: true, slipMissingReason: 'ลูกค้าจ่ายเงินสด', payMethod: 'transfer' })).toBe('paid')
   })
 
   it('เหตุผลเป็นช่องว่างล้วน ไม่นับเป็นหลักฐาน', () => {
-    expect(draftPayStage({ payStarted: true, slipMissingReason: '   ' })).toBe('paying')
+    expect(draftPayStage({ payStarted: true, slipMissingReason: '   ', payMethod: 'transfer' })).toBe('paying')
   })
 
   it('มีหลักฐานแต่ payStarted หลุดหาย ยังต้องเป็น paid (หลักฐานสำคัญกว่าธง)', () => {
-    expect(draftPayStage({ payStarted: false, slipId: 's-1' })).toBe('paid')
+    expect(draftPayStage({ payStarted: false, slipId: 's-1', payMethod: 'transfer' })).toBe('paid')
   })
 })
 
@@ -532,7 +532,7 @@ describe('ทิ้งใบสั่ง — ต้องไม่ลบร่�
 
     s().start('5')
     s().addProduct(product())
-    s().lock()
+    s().lock(60)
     s().startPay()
     const slipId = await saveSlip({
       blob: new Blob(['x'], { type: 'image/jpeg' }),
@@ -549,5 +549,79 @@ describe('ทิ้งใบสั่ง — ต้องไม่ลบร่�
     expect(row).toBeDefined()
     expect(row?.tableLabel).toBe('5')
     expect(row?.amount).toBe(650)
+  })
+})
+
+/* =========================================================
+   ยอดที่ล็อกไว้ตอนขั้นที่ 3
+
+   เคยพัง: ล็อกแต่ "รายการ" ไม่ได้ล็อก "ยอด" แล้วตอนกดส่งไปคิดยอดใหม่สดๆ
+   โปรโมชันกรองตามเวลาจริง (promotions.ts ใช้ Date.now()) ใบสั่งที่ค้าง
+   ข้ามช่วงโปรฯ จะได้ยอดใหม่ที่ไม่ตรงกับเงินที่ลูกค้าโอนมาแล้ว
+   ========================================================= */
+
+describe('ยอดที่ล็อกไว้ (lockedPayable)', () => {
+  beforeEach(() => {
+    s().clear()
+    s().start('5')
+    s().addProduct(product())
+  })
+
+  it('กดสรุปรายการแล้วยอดถูกเก็บไว้', () => {
+    s().lock(123.45)
+    expect(s().locked).toBe(true)
+    expect(s().lockedPayable).toBe(123.45)
+  })
+
+  it('กลับไปแก้รายการ = ล้างยอดที่ล็อกไว้ (ต้องล็อกใหม่ จะได้ QR ใหม่)', () => {
+    s().lock(100)
+    s().unlock()
+    expect(s().locked).toBe(false)
+    expect(s().lockedPayable).toBeUndefined()
+  })
+
+  it('ยอดเพี้ยน (NaN / ติดลบ) ล็อกไม่ได้', () => {
+    s().lock(Number.NaN)
+    expect(s().locked).toBe(false)
+    s().lock(-5)
+    expect(s().locked).toBe(false)
+    expect(s().lockedPayable).toBeUndefined()
+  })
+
+  it('ใบสั่งเปล่าล็อกไม่ได้ และไม่เก็บยอด', () => {
+    s().clear()
+    s().start('5')
+    s().lock(50)
+    expect(s().locked).toBe(false)
+    expect(s().lockedPayable).toBeUndefined()
+  })
+
+  it('เริ่มโต๊ะใหม่ = ล้างยอดที่ล็อกไว้', () => {
+    s().lock(100)
+    s().start('9')
+    expect(s().lockedPayable).toBeUndefined()
+  })
+})
+
+describe('จ่ายเงินสด = ถือว่าตรวจแล้วในตัว', () => {
+  beforeEach(() => {
+    s().clear()
+    s().start('5')
+    s().addProduct(product())
+    s().lock(60)
+    s().startPay()
+  })
+
+  it('เลือกเงินสด → ส่งได้เลยไม่ต้องมีสลิป (กติกาเดียวกับ quickService)', () => {
+    s().setPayMethod('cash')
+    expect(draftPayStage(s())).toBe('paid')
+  })
+
+  it('เลือกโอน → ต้องมีสลิปหรือเหตุผลก่อน', () => {
+    s().setPayMethod('transfer')
+    expect(draftPayStage(s())).toBe('paying')
+
+    s().attachSlip('s-1')
+    expect(draftPayStage(s())).toBe('paid')
   })
 })

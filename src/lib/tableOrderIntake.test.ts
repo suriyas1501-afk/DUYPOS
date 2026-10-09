@@ -166,6 +166,35 @@ describe('ด่านตรวจก่อนออกบิล', () => {
     expect(await db.sales.count()).toBe(0)
   })
 
+  /* `NaN > EPS` เป็น false ทุกกรณี ⇒ ด่านเทียบยอดจะ "ผ่าน" เมื่อยอดคิดไม่ได้
+     แล้วปล่อยบิลที่ total เป็น NaN เข้าฐานข้อมูล ซึ่งทำให้ทุกการรวมยอดพัง
+     ทั้งแดชบอร์ด รายงาน และ computeShiftSummary จนปิดกะไม่ได้
+     นี่คือ fail-open ในด่านเดียวที่รับประกันว่าบิลตรงกับเงินที่เข้าบัญชี */
+  it('ยอดที่คิดใหม่เป็น NaN → ต้องปฏิเสธ ไม่ใช่ปล่อยผ่านเพราะเทียบกับ NaN ไม่เป็นจริง', async () => {
+    const bad = await addProduct({ name: 'ของราคาเสีย', price: NaN, cost: 0, stock: 10 })
+    const res = await receiveTicket(
+      ticket({ items: [cartLine(bad, { price: NaN, cost: 0 })], paidAmount: 60 }),
+      settings,
+      noPromos,
+    )
+
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.reason).toMatch(/คำนวณไม่ได้/)
+    expect(await db.sales.count()).toBe(0)
+    // และต้องไม่ทำเครื่องหมายว่าออกบิลแล้ว ไม่งั้นแก้ราคาแล้วส่งใหม่ไม่ได้
+    expect((await db.orderTickets.get('t-test-1'))?.state).toBe('rejected')
+  })
+
+  it('ยอดที่ลูกค้าจ่ายมาเป็น NaN → ต้องปฏิเสธ', async () => {
+    const res = await receiveTicket(ticket({ paidAmount: NaN }), settings, noPromos)
+
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.reason).toMatch(/คำนวณไม่ได้/)
+    expect(await db.sales.count()).toBe(0)
+  })
+
   it('ใบสั่งที่ถูกปฏิเสธไปแล้ว แก้ให้ถูกแล้วส่งใหม่ได้', async () => {
     const bad = await receiveTicket(ticket({ paidAmount: 50 }), settings, noPromos)
     expect(bad.ok).toBe(false)

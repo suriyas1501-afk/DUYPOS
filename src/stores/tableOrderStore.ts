@@ -183,12 +183,28 @@ export const DEFAULT_TABLE_COUNT = 20
  *
  * crypto.randomUUID มีเฉพาะใน secure context — เปิดผ่าน http://<ไอพีในวง LAN>
  * จะไม่มี จึงต้องมีทางสำรองแบบเดียวกับ SHA-256 ใน src/lib/auth.ts
+ *
+ * **ทางสำรองต้องเป็น getRandomValues ไม่ใช่ Math.random()** — getRandomValues
+ * ใช้ได้นอก secure context (ต่างจาก randomUUID) และ Math.random() ของ V8 เป็น
+ * xorshift128+ ซึ่งเดาค่าถัดไปได้จากผลที่เห็นไม่กี่ตัว รหัสใบสั่งที่เดาได้ทำให้
+ * เครื่องอื่นจองรหัสที่เรากำลังจะใช้ไว้ก่อน แล้วออเดอร์ของเราถูกปฏิเสธว่า "ซ้ำ"
  */
+function randomToken(bytes = 12): string {
+  const buf = new Uint8Array(bytes)
+  const c = globalThis.crypto
+  if (c?.getRandomValues) {
+    c.getRandomValues(buf)
+  } else {
+    // ไม่มี crypto เลยเป็นกรณีที่ไม่ควรเกิดในเบราว์เซอร์ที่รัน PWA ได้
+    for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 256)
+  }
+  return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 export function newTicketUid(): string {
   const c = globalThis.crypto
   if (typeof c?.randomUUID === 'function') return `t-${c.randomUUID()}`
-  const rand = Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10)
-  return `t-${Date.now().toString(36)}-${rand}`
+  return `t-${randomToken()}`
 }
 
 interface TableOrderState {
@@ -229,6 +245,16 @@ interface TableOrderState {
    * เพราะเงินสดกับโอนเข้าลิ้นชักคนละทาง (ดู cashCustody ใน §13)
    */
   payMethod: PaymentMethod
+  /**
+   * เวลาที่พนักงานยืนยันว่าเงินเข้า — **สแตมป์ครั้งเดียว ตอนกดส่งครั้งแรก**
+   *
+   * ห้ามคิดใหม่ทุกครั้งที่กด เพราะ §17 บังคับให้กดส่งซ้ำได้เมื่อเน็ตหลุด
+   * ถ้าเวลาขยับทุกครั้ง (ก) `Sale.paymentVerifiedAt` จะกลายเป็นเวลาที่กดซ้ำ
+   * ไม่ใช่เวลาที่ตรวจเงินจริง และ (ข) เนื้อใบสั่งจะต่างจากใบที่ส่งไปแล้ว
+   * ทำให้คลาวด์ตอบว่า "ส่งซ้ำด้วยเนื้อไม่เหมือนเดิม" ทุกครั้งที่กดซ้ำ
+   * ซึ่งเป็นคำเตือนปลอมที่ผลักให้พนักงานไปตีบิลใหม่ = บิล 2 ใบต่อเงินก้อนเดียว
+   */
+  verifiedAt?: number
 
   /** เริ่มออเดอร์ใหม่ที่โต๊ะนี้ (ทิ้งดราฟต์เดิมถ้ามี) */
   start(tableLabel: string): void
@@ -264,6 +290,12 @@ interface TableOrderState {
   setSlipMissing(reason: string): void
   /** ลูกค้าจ่ายด้วยอะไร */
   setPayMethod(method: PaymentMethod): void
+  /**
+   * สแตมป์เวลายืนยันเงินเข้า แล้วคืนค่าที่ใช้จริง
+   *
+   * กดครั้งแรกได้เวลาใหม่ · กดซ้ำได้เวลาเดิมคืนไป (ดูคอมเมนต์ที่ verifiedAt)
+   */
+  markVerified(): number
   clear(): void
 }
 
@@ -279,6 +311,7 @@ const EMPTY = {
   slipMissingReason: undefined,
   // ค่าเริ่มต้นเป็นโอน เพราะทางหลักของโหมดนี้คือกาง QR ให้ลูกค้าสแกน
   payMethod: 'transfer' as PaymentMethod,
+  verifiedAt: undefined,
 }
 
 export const useTableOrder = create<TableOrderState>()(
@@ -342,7 +375,10 @@ export const useTableOrder = create<TableOrderState>()(
       unlock() {
         // มีหลักฐานการจ่ายแล้ว = ห้ามย้อนไปแก้ยอดเงียบๆ
         if (get().slipId != null) return
-        set({ locked: false, payStarted: false, lockedPayable: undefined })
+        // ย้อนไปแก้รายการ = การยืนยันเงินเข้ารอบก่อนใช้ไม่ได้แล้ว
+        // (ต่างจาก backToSummary ที่แค่เปลี่ยนหน้า — ตรงนั้นห้ามล้าง ไม่งั้น
+        //  การกดส่งซ้ำหลังเน็ตหลุดจะกลายเป็น "เนื้อไม่เหมือนเดิม" อีก)
+        set({ locked: false, payStarted: false, lockedPayable: undefined, verifiedAt: undefined })
       },
 
       startPay() {
@@ -365,6 +401,14 @@ export const useTableOrder = create<TableOrderState>()(
 
       setPayMethod(method) {
         set({ payMethod: method })
+      },
+
+      markVerified() {
+        const already = get().verifiedAt
+        if (already != null) return already
+        const at = Date.now()
+        set({ verifiedAt: at })
+        return at
       },
 
       setSlipMissing(reason) {

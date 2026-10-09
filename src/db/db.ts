@@ -131,7 +131,9 @@ class PosDB extends Dexie {
     //    ในทรานแซกชันเดียวกับ finalizeSale: ถ้า state เป็น 'billed' แล้วให้คืนบิลใบเดิม
     //    ห้ามออกใบใหม่ (ยังไม่ได้เขียนโค้ดส่วนนี้ — ดู TABLE-ORDER-PLAN.md ขั้นที่ 5-6)
     //  - slipQueue = คิวรูปสลิปบนมือถือ รอส่งขึ้นคลาวด์
-    //  **ห้ามใส่ 2 ตารางนี้ใน TABLES ของ src/lib/backup.ts** — เก็บไฟล์รูป ไฟล์สำรองจะบวมจนพัง
+    //  **ห้ามใส่ slipQueue ใน TABLES ของ src/lib/backup.ts** — เก็บ Blob รูป ไฟล์สำรองจะบวมจนพัง
+    //  ส่วน orderTickets **ต้องอยู่ใน TABLES** (ไม่มี Blob) เพราะเป็นด่านกันบิลซ้ำ
+    //  ถ้ากู้เครื่องกลางมาแล้วตารางนี้ว่าง ใบที่ออกบิลไปแล้วจะถูกออกบิลซ้ำทั้งชุด
     //  index orderChannel เพิ่มที่ sales เพื่อแยกรายงานยอดขายโต๊ะ/เคาน์เตอร์ได้ภายหลัง
     this.version(7).stores({
       orderTickets: 'ticketUid, state, createdAt, saleId',

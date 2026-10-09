@@ -67,6 +67,7 @@ export default function TableOrder() {
     clearSlip,
     setSlipMissing,
     setPayMethod,
+    markVerified,
   } = draft
 
   /**
@@ -89,7 +90,14 @@ export default function TableOrder() {
   /* ล้างรูปสลิปเก่าออกจากเครื่อง — ยังไม่มีตัวส่งขึ้นคลาวด์ในเฟสนี้
      ถ้าไม่ล้าง รูปจะกองจนพื้นที่เครื่องเต็ม ซึ่งเป็นสาเหตุที่ทำให้เก็บดราฟต์ไม่ได้ */
   useEffect(() => {
-    void pruneSlipQueue(settings?.slipKeepDays ?? 90)
+    void pruneSlipQueue(settings?.slipKeepDays ?? 90).then((r) => {
+      // ลบได้แค่รูปที่ขึ้นคลาวด์แล้ว เฟสนี้ยังไม่มีตัวส่ง จึงต้องเตือนแทนการลบเงียบ
+      if (r.unsentOverLimit > 0) {
+        toast.error(
+          `มีรูปสลิปที่ยังไม่ได้ส่งขึ้นคลาวด์เกินที่เครื่องเก็บได้ ${r.unsentOverLimit} รูป — ให้แจ้งเจ้าของร้าน`,
+        )
+      }
+    })
   }, [settings?.slipKeepDays])
 
   /**
@@ -187,7 +195,8 @@ export default function TableOrder() {
           // ยอดที่ลูกค้าจ่ายไปจริง = ยอดที่ฝังใน QR ตอนขั้นที่ 4 = ยอดที่ล็อกไว้ขั้นที่ 3
           paidAmount: lockedPayable,
           actor: getActor(),
-          verifiedAt: Date.now(),
+          // สแตมป์ครั้งเดียว กดซ้ำได้เวลาเดิม (ดูคอมเมนต์ที่ verifiedAt ใน tableOrderStore)
+          verifiedAt: markVerified(),
           slipId,
           slipMissingReason,
         },
@@ -353,8 +362,14 @@ export default function TableOrder() {
             <Icon name="alert" size={15} className="mt-0.5 shrink-0" />
             <span>
               <span className="font-medium">ใบนี้รับเงินไปแล้ว ฿{baht(lockedPayable ?? 0)}</span> —
-              {slipId != null ? ' มีรูปสลิปแนบอยู่' : ` บันทึกว่า ${slipMissingReason}`} ให้กดทำต่อ
-              แล้วจัดการที่หน้ารับเงิน
+              {/* เงินสดคือทางที่สามที่ทำให้ payStage เป็น 'paid' โดยไม่มีทั้งสลิปและเหตุผล
+                  ถ้าไม่แยกไว้ จะขึ้นว่า "บันทึกว่า undefined" ให้พนักงานอ่าน */}
+              {slipId != null
+                ? ' มีรูปสลิปแนบอยู่'
+                : payMethod === 'cash'
+                  ? ' รับเป็นเงินสดที่โต๊ะ'
+                  : ` บันทึกว่า ${slipMissingReason}`}{' '}
+              ให้กดทำต่อ แล้วจัดการที่หน้ารับเงิน
             </span>
           </div>
         )}
@@ -368,7 +383,7 @@ export default function TableOrder() {
           tableLabel == null
             ? ''
             : payStage === 'paid'
-              ? `โต๊ะ ${tableLabel} รับเงินไปแล้ว ฿${baht(lockedPayable ?? 0)} — ทิ้งใบสั่งแล้วจะไม่มีบิลของยอดนี้ในระบบ (รูปสลิปยังเก็บไว้เป็นหลักฐาน) ต้องการทิ้งไหม?`
+              ? `โต๊ะ ${tableLabel} รับเงินไปแล้ว ฿${baht(lockedPayable ?? 0)} — ทิ้งใบสั่งแล้วจะไม่มีบิลของยอดนี้ในระบบ${slipId != null ? ' (รูปสลิปยังเก็บไว้เป็นหลักฐาน)' : ''} ต้องการทิ้งไหม?`
               : `รายการของโต๊ะ ${tableLabel} จะหายทั้งหมด กู้คืนไม่ได้ ต้องการทิ้งไหม?`
         }
         confirmLabel="ทิ้งใบสั่ง"

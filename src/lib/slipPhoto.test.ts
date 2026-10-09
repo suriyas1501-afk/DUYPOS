@@ -8,6 +8,7 @@ import {
   pruneSlipQueue,
   saveSlip,
 } from './slipPhoto'
+import type { SlipQueueItem } from '../db/types'
 import { resetDb } from '../test/helpers'
 
 /* =========================================================
@@ -73,10 +74,15 @@ describe('pruneSlipQueue — กันรูปกองจนพื้นที
 
   const blob = () => new Blob(['x'], { type: 'image/jpeg' })
 
-  /** ใส่รูปพร้อมกำหนดอายุย้อนหลังเป็นวัน */
-  async function addSlip(daysAgo: number) {
+  /**
+   * ใส่รูปพร้อมกำหนดอายุย้อนหลังเป็นวัน
+   *
+   * state เริ่มต้นเป็น 'done' = ขึ้นคลาวด์แล้ว เพราะเทสต์ของการล้างของเก่า
+   * สนใจเฉพาะรูปที่ลบได้ · รูปที่ยังไม่ขึ้นคลาวด์มีเทสต์ของตัวเองด้านล่าง
+   */
+  async function addSlip(daysAgo: number, state: SlipQueueItem['state'] = 'done') {
     const id = await saveSlip({ blob: blob(), tableLabel: '5', amount: 100 })
-    await db.slipQueue.update(id, { createdAt: Date.now() - daysAgo * 86_400_000 })
+    await db.slipQueue.update(id, { createdAt: Date.now() - daysAgo * 86_400_000, state })
     return id
   }
 
@@ -84,9 +90,9 @@ describe('pruneSlipQueue — กันรูปกองจนพื้นที
     const old = await addSlip(100)
     const fresh = await addSlip(1)
 
-    const removed = await pruneSlipQueue(90)
+    const res = await pruneSlipQueue(90)
 
-    expect(removed).toBe(1)
+    expect(res.removed).toBe(1)
     expect(await db.slipQueue.get(old)).toBeUndefined()
     expect(await db.slipQueue.get(fresh)).toBeDefined()
   })
@@ -101,6 +107,45 @@ describe('pruneSlipQueue — กันรูปกองจนพื้นที
     expect(await db.slipQueue.get(ids[0])).toBeUndefined()
     expect(await db.slipQueue.get(ids[1])).toBeUndefined()
     expect(await db.slipQueue.get(ids[4])).toBeDefined()
+  })
+
+  /* รูปที่ยังไม่ขึ้นคลาวด์คือสำเนาเดียวของหลักฐานการรับเงิน และ slipQueue
+     ไม่อยู่ในไฟล์สำรองโดยเจตนา → ลบทิ้งเท่ากับทำลายร่องรอยตาม §17 ข้อ 3
+     เฟสนี้ยังไม่มีตัวส่งขึ้นคลาวด์ ทุกแถวจึงเป็น 'pending' ทั้งหมด */
+  it('รูปที่ยังไม่ขึ้นคลาวด์ ห้ามลบ ไม่ว่าจะเก่าหรือเกินเพดานแค่ไหน', async () => {
+    const oldPending = await addSlip(500, 'pending')
+    const failed = await addSlip(400, 'failed')
+    const uploading = await addSlip(300, 'uploading')
+
+    const res = await pruneSlipQueue(90, 1)
+
+    expect(res.removed).toBe(0)
+    expect(await db.slipQueue.count()).toBe(3)
+    expect(await db.slipQueue.get(oldPending)).toBeDefined()
+    expect(await db.slipQueue.get(failed)).toBeDefined()
+    expect(await db.slipQueue.get(uploading)).toBeDefined()
+  })
+
+  it('รูปที่ยังไม่ขึ้นคลาวด์เกินเพดาน → คืนจำนวนไปให้หน้าจอเตือน แทนการลบ', async () => {
+    for (let i = 0; i < 5; i++) await addSlip(1, 'pending')
+
+    const res = await pruneSlipQueue(90, 3)
+
+    expect(res.removed).toBe(0)
+    expect(res.unsentOverLimit).toBe(2)
+    expect(await db.slipQueue.count()).toBe(5)
+  })
+
+  it('นับเฉพาะรูปที่ยังไม่ขึ้นคลาวด์ตอนเทียบเพดาน — ของที่ส่งแล้วไม่นับ', async () => {
+    for (let i = 0; i < 4; i++) await addSlip(1, 'done')
+    for (let i = 0; i < 2; i++) await addSlip(1, 'pending')
+
+    const res = await pruneSlipQueue(90, 3)
+
+    // 2 รูปที่ยังไม่ส่ง < เพดาน 3 → ไม่เตือน · ส่วนที่เกินเพดานถูกลบจากของที่ส่งแล้ว
+    expect(res.unsentOverLimit).toBe(0)
+    expect(res.removed).toBe(3)
+    expect(await db.slipQueue.count()).toBe(3)
   })
 
   it('ค่าวันเพี้ยน (0 / ติดลบ) ต้องไม่กวาดรูปของวันนี้ทิ้ง', async () => {

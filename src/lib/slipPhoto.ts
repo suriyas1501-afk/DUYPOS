@@ -142,12 +142,23 @@ export async function resizePhoto(
   return { blob: out, width, height }
 }
 
-/** สร้างรหัสรูปสลิป — ต้องไม่ซ้ำข้ามเครื่อง เพราะจะเป็นชื่อไฟล์บนคลาวด์ */
+/**
+ * สร้างรหัสรูปสลิป — ต้องไม่ซ้ำข้ามเครื่อง เพราะจะเป็นชื่อไฟล์บนคลาวด์
+ *
+ * **ทางสำรองต้องเป็น getRandomValues ไม่ใช่ Math.random()** (เหตุผลเดียวกับ
+ * newTicketUid ใน src/stores/tableOrderStore.ts) — ชื่อไฟล์ที่เดาได้ทำให้
+ * เครื่องอื่นจองชื่อไว้ก่อนได้ แล้วรูปสลิปซึ่งเป็นหลักฐานการรับเงินจะอัปโหลดไม่ขึ้น
+ */
 export function newSlipId(): string {
   const c = globalThis.crypto
   if (typeof c?.randomUUID === 'function') return `s-${c.randomUUID()}`
-  const rand = Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10)
-  return `s-${Date.now().toString(36)}-${rand}`
+  const buf = new Uint8Array(12)
+  if (c?.getRandomValues) {
+    c.getRandomValues(buf)
+  } else {
+    for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 256)
+  }
+  return `s-${Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('')}`
 }
 
 /**
@@ -182,35 +193,63 @@ export async function deleteSlip(slipId: string): Promise<void> {
   await db.slipQueue.delete(slipId)
 }
 
+export interface PruneResult {
+  /** จำนวนรูปที่ลบไปจริง (ลบได้เฉพาะรูปที่ขึ้นคลาวด์แล้ว) */
+  removed: number
+  /** จำนวนรูปที่ยังไม่ขึ้นคลาวด์ ซึ่งเกินเพดานจำนวนแล้ว — ต้องเตือนบนหน้าจอ */
+  unsentOverLimit: number
+}
+
 /**
  * ล้างรูปเก่าออกจากเครื่อง
  *
  * ช่วงที่ยังไม่มีตัวส่งขึ้นคลาวด์ รูปจะกองอยู่ในเครื่องไปเรื่อยๆ
  * โทรศัพท์พื้นที่เต็มคือสิ่งที่ทำให้ระบบเก็บดราฟต์พัง (ดู draftPersistence)
  * จึงต้องมีเพดานทั้งตามอายุและตามจำนวน
+ *
+ * **ลบได้เฉพาะแถวที่ state = 'done' (ขึ้นคลาวด์แล้ว)**
+ * รูปที่ยังไม่ขึ้นคลาวด์เป็นสำเนาเดียวของหลักฐานการรับเงิน และ slipQueue
+ * ไม่อยู่ในไฟล์สำรองโดยเจตนา (ดู TABLES ใน src/lib/backup.ts) ⇒ ลบทิ้ง
+ * เท่ากับทำลายร่องรอยที่ TABLE-ORDER-PLAN.md §17 ข้อ 3 สร้างไว้เพื่อกรณี
+ * "ใบสั่งหายแต่ยังต้องตามได้ว่ารับเงินโต๊ะไหนไปเท่าไร"
+ *
+ * เฟสนี้ยังไม่มีตัวส่งขึ้นคลาวด์ ทุกแถวจึงเป็น 'pending' และฟังก์ชันนี้จะ
+ * **ไม่ลบอะไรเลย** — คืน unsentOverLimit ให้ผู้เรียกไปขึ้นคำเตือนแทนการลบเงียบ
+ * พื้นที่เต็มเป็นปัญหาที่มองเห็นและแก้ได้ หลักฐานที่หายไปเงียบๆ ไม่ใช่
  */
-export async function pruneSlipQueue(keepDays = 90, maxRows = SLIP_LOCAL_MAX): Promise<number> {
+export async function pruneSlipQueue(
+  keepDays = 90,
+  maxRows = SLIP_LOCAL_MAX,
+): Promise<PruneResult> {
   const days = Number.isFinite(keepDays) && keepDays > 0 ? Math.floor(keepDays) : 90
+  const cap = Number.isFinite(maxRows) && maxRows > 0 ? Math.floor(maxRows) : SLIP_LOCAL_MAX
   const cutoff = Date.now() - days * 86_400_000
   let removed = 0
 
-  const old = await db.slipQueue.where('createdAt').below(cutoff).primaryKeys()
+  const old = await db.slipQueue
+    .where('createdAt')
+    .below(cutoff)
+    .filter((r) => r.state === 'done')
+    .primaryKeys()
   if (old.length > 0) {
     await db.slipQueue.bulkDelete(old)
     removed += old.length
   }
 
+  // เกินเพดานจำนวน: ลบของเก่าสุดก่อน แต่ยังเฉพาะที่ขึ้นคลาวด์แล้ว
   const total = await db.slipQueue.count()
-  if (total > maxRows) {
-    // ลบของเก่าสุดก่อน (createdAt เป็น index อยู่แล้วใน schema v7)
+  if (total > cap) {
     const extra = await db.slipQueue
       .orderBy('createdAt')
-      .limit(total - maxRows)
+      .filter((r) => r.state === 'done')
+      .limit(total - cap)
       .primaryKeys()
     if (extra.length > 0) {
       await db.slipQueue.bulkDelete(extra)
       removed += extra.length
     }
   }
-  return removed
+
+  const unsent = await db.slipQueue.filter((r) => r.state !== 'done').count()
+  return { removed, unsentOverLimit: Math.max(0, unsent - cap) }
 }

@@ -625,3 +625,64 @@ describe('จ่ายเงินสด = ถือว่าตรวจแล�
     expect(draftPayStage(s())).toBe('paid')
   })
 })
+
+/* =========================================================
+   เวลายืนยันเงินเข้าต้องนิ่ง
+
+   §17 บังคับว่าปุ่มส่งต้องกดซ้ำได้เมื่อเน็ตหลุด ถ้าเวลาขยับทุกครั้งที่กด
+   (ก) Sale.paymentVerifiedAt จะกลายเป็นเวลาที่กดซ้ำ ไม่ใช่เวลาที่ตรวจเงินจริง
+   (ข) เนื้อใบสั่งจะต่างจากใบที่ส่งขึ้นคลาวด์ไปแล้ว ทำให้คลาวด์ตอบว่า
+       "ส่งซ้ำด้วยเนื้อไม่เหมือนเดิม" ทุกครั้ง = คำเตือนปลอมที่ผลักให้พนักงาน
+       ไปตีบิลใหม่ แล้วเงินก้อนเดียวจะมีบิล 2 ใบ
+   ========================================================= */
+describe('เวลายืนยันเงินเข้า (verifiedAt)', () => {
+  beforeEach(() => {
+    s().clear()
+    s().start('5')
+    s().addProduct(product())
+    s().lock(60)
+    s().startPay()
+  })
+
+  it('ยังไม่กดส่ง = ยังไม่มีเวลายืนยัน', () => {
+    expect(s().verifiedAt).toBeUndefined()
+  })
+
+  it('กดส่งซ้ำได้เวลาเดิมคืนไป ไม่สร้างเวลาใหม่', () => {
+    // ต้องขยับนาฬิกาเอง ไม่งั้นการเรียกสองครั้งติดกันได้มิลลิวินาทีเดียวกัน
+    // แล้วเทสต์จะผ่านทั้งที่โค้ดสแตมป์ใหม่ทุกครั้ง (ตรวจด้วยการทดลองแก้โค้ดแล้ว)
+    const clock = vi.spyOn(Date, 'now')
+    try {
+      clock.mockReturnValue(1_000_000)
+      const first = s().markVerified()
+      expect(first).toBe(1_000_000)
+
+      clock.mockReturnValue(9_000_000)
+      const again = s().markVerified()
+
+      expect(again).toBe(1_000_000)
+      expect(s().verifiedAt).toBe(1_000_000)
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('ย้อนไปแก้รายการ (unlock) = ล้างเวลายืนยันรอบก่อน', () => {
+    s().markVerified()
+    s().backToSummary()
+    s().unlock()
+    expect(s().verifiedAt).toBeUndefined()
+  })
+
+  it('เปลี่ยนหน้ากลับไปหน้าสรุปเฉยๆ ต้องไม่ล้างเวลายืนยัน', () => {
+    const first = s().markVerified()
+    s().backToSummary()
+    expect(s().verifiedAt).toBe(first)
+  })
+
+  it('เริ่มโต๊ะใหม่ = ล้างเวลายืนยัน', () => {
+    s().markVerified()
+    s().start('9')
+    expect(s().verifiedAt).toBeUndefined()
+  })
+})

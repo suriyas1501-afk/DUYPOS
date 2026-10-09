@@ -75,6 +75,17 @@ export function validateTicket(
   if (ticket.verifiedAt == null) {
     return { ok: false, reason: 'ใบสั่งนี้ยังไม่มีการยืนยันว่าเงินเข้า' }
   }
+  /* **ต้องเช็ค NaN ก่อนเทียบ** — `NaN > EPS` เป็น false ทุกกรณี ด่านข้างล่าง
+     จึง "ผ่าน" เมื่อยอดใดยอดหนึ่งคิดไม่ได้ แล้วปล่อยบิลที่ total เป็น NaN เข้า DB
+     ซึ่งทำให้ทุกการรวมยอดพังทั้งระบบ (แดชบอร์ด รายงาน และ computeShiftSummary
+     จนปิดกะไม่ได้) นี่คือ fail-open ในด่านเดียวที่รับประกันว่าบิลตรงกับเงินที่เข้าบัญชี
+     เกิดได้จริงเมื่อสินค้ามีราคา/ตัวคูณหน่วยเพี้ยนเป็น NaN เช่นจากการนำเข้า CSV */
+  if (!Number.isFinite(recomputedPayable) || !Number.isFinite(ticket.paidAmount)) {
+    return {
+      ok: false,
+      reason: 'ยอดเงินของใบสั่งนี้คำนวณไม่ได้ (ข้อมูลราคาสินค้าเสีย) — ให้ตรวจราคาสินค้าก่อนออกบิล',
+    }
+  }
   if (Math.abs(r2(recomputedPayable) - r2(ticket.paidAmount)) > EPS) {
     return {
       ok: false,

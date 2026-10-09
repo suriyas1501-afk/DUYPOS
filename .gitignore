@@ -13,3 +13,7 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# ค่าตั้งเฉพาะเครื่องของนักพัฒนา (ทับค่าใน .env ได้) — ห้ามเข้า git
+.env.local
+.env.*.local

@@ -14,6 +14,7 @@ import {
 import { computeTotals } from '../lib/totals'
 import { baht } from '../lib/format'
 import { pruneSlipQueue } from '../lib/slipPhoto'
+import { ensureCatalogId } from '../lib/catalog'
 import {
   TICKET_SCHEMA_VERSION,
   canBillHere,
@@ -89,6 +90,16 @@ export default function TableOrder() {
 
   /* ล้างรูปสลิปเก่าออกจากเครื่อง — ยังไม่มีตัวส่งขึ้นคลาวด์ในเฟสนี้
      ถ้าไม่ล้าง รูปจะกองจนพื้นที่เครื่องเต็ม ซึ่งเป็นสาเหตุที่ทำให้เก็บดราฟต์ไม่ได้ */
+  /* ให้เครื่องนี้มีรหัสชุดสินค้าของตัวเองไว้ก่อน (ดู src/lib/catalog.ts)
+     ต้องมีตั้งแต่ก่อนกดส่ง เพราะใบสั่งพกค่านี้ไปให้เครื่องกลางเทียบ
+     เครื่องเดียวที่ทั้งรับออเดอร์และออกบิลจะได้ค่าเดียวกันทั้งสองฝั่งเสมอ */
+  useEffect(() => {
+    if (settings == null) return
+    void ensureCatalogId().catch(() => {
+      /* เขียนไม่ได้ก็ยังรับออเดอร์ได้ ด่านจะถูกข้ามเหมือนร้านเครื่องเดียว */
+    })
+  }, [settings == null])
+
   useEffect(() => {
     void pruneSlipQueue(settings?.slipKeepDays ?? 90).then((r) => {
       // ลบได้แค่รูปที่ขึ้นคลาวด์แล้ว เฟสนี้ยังไม่มีตัวส่ง จึงต้องเตือนแทนการลบเงียบ
@@ -197,6 +208,9 @@ export default function TableOrder() {
           actor: getActor(),
           // สแตมป์ครั้งเดียว กดซ้ำได้เวลาเดิม (ดูคอมเมนต์ที่ verifiedAt ใน tableOrderStore)
           verifiedAt: markVerified(),
+          // ชุดรหัสสินค้าที่คิดยอดนี้ — เครื่องกลางใช้กันการตัดสต็อกผิดตัว
+          catalogId: settings.catalogId,
+          catalogRev: settings.catalogRev,
           slipId,
           slipMissingReason,
         },

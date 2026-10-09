@@ -39,6 +39,13 @@
 --
 --     จะได้รหัส 16 ตัวอักษร เอาไปกรอกที่เครื่องกลาง **ภายใน 30 นาที** ใช้ได้ครั้งเดียว
 --  4. ผูกมือถือ: ที่เครื่องกลาง กดปุ่ม "เพิ่มเครื่องพนักงาน" (เครื่องกลางออกรหัสเองได้)
+--  5. **ส่งแคตตาล็อกสินค้าไปที่มือถือ** — ข้อนี้ไม่ใช่ของเสริม ถ้าไม่ทำ
+--     เครื่องกลางจะปฏิเสธใบสั่งจากมือถือทุกใบ (โดยเจตนา) เพราะรหัสสินค้าของ
+--     มือถือที่ยังไม่ได้รับแคตตาล็อกจะชี้ไปคนละตัว แล้วสต็อกจะถูกตัดผิด
+--     ตอนนี้ทำผ่านไฟล์: หน้าตั้งค่า → รับออเดอร์ที่โต๊ะ → "ส่งออกจากเครื่องกลาง"
+--     แล้วส่งไฟล์ไปที่มือถือ → ที่มือถือกด "นำเข้าที่มือถือ"
+--     ตอนต่อคลาวด์จะเปลี่ยนไปใช้ pos_put_config / pos_get_config ด้วยก้อนเดียวกัน
+--     **แก้ราคาหรือเพิ่มสินค้าแล้วต้องส่งใหม่** ไม่งั้นยอดที่มือถือคิดจะไม่ตรง
 --
 --  ### เครื่องกลางหาย / เครื่องกลางพัง
 --  รันข้อ 3 ซ้ำที่หน้าเว็บ Supabase **แล้วเอารหัสไปกรอกที่เครื่องใหม่**
@@ -200,12 +207,29 @@ create table if not exists pos.slips (
 create index if not exists slips_device_idx on pos.slips (device_uid, created_at desc);
 create index if not exists slips_ticket_idx on pos.slips (ticket_uid);
 
+/* แคตตาล็อกสินค้า + ค่าตั้งของร้าน ที่เครื่องกลาง push ขึ้นมาให้มือถือดึงไป
+
+   **ทำไมคลาวด์ต้องรู้เรื่องนี้ ทั้งที่หัวไฟล์บอกว่ามันไม่คิดเงิน**
+   เพราะ `Product.id` เป็น auto-increment ของ IndexedDB ของแต่ละเครื่อง
+   มือถือที่เพิ่งเปิดแอปจะมีสินค้าตัวอย่างที่กิน id ชุดเดียวกันกับสินค้าจริง ⇒ ใบสั่งจะอ้างสินค้าผิดตัว
+   แบบที่ด่านเทียบยอดเงินจับไม่ได้ (ดู src/lib/catalog.ts และ TABLE-ORDER-PLAN.md §21 ข้อ 1)
+   คลาวด์เก็บก้อน jsonb ไว้เฉยๆ แล้วส่งคืนเมื่อมือถือขอ — เหมือนใบสั่ง
+   ด่านที่ตรวจจริงคือ `validateTicket` ที่เครื่องกลาง ซึ่งเทียบ `catalogId` */
+create table if not exists pos.config (
+  key        text primary key check (key in ('catalog')),
+  rev        text        not null check (length(rev) between 1 and 64),
+  payload    jsonb       not null,
+  updated_at timestamptz not null default now(),
+  updated_by uuid        not null references pos.devices (uid)
+);
+
 -- RLS เปิดทุกตาราง และ **ไม่สร้าง policy เลย** = ไม่มีใครอ่านเขียนตรงๆ ได้
 -- (คนที่เข้าถึงได้คือ security definer ซึ่งทำงานด้วยสิทธิ์เจ้าของ ไม่ผ่าน RLS)
 alter table pos.devices      enable row level security;
 alter table pos.enroll_codes enable row level security;
 alter table pos.tickets      enable row level security;
 alter table pos.slips        enable row level security;
+alter table pos.config       enable row level security;
 
 
 -- ============================================================================
@@ -388,6 +412,11 @@ $$;
 
 create or replace function pos.max_pending_per_device() returns int
   language sql immutable set search_path = '' as $$ select 200 $$;
+
+/* เพดานของก้อนแคตตาล็อก — ร้าน 500 รายการ×~400 ไบต์ = 200KB
+   รูปสินค้าไม่อยู่ในก้อนนี้อยู่แล้ว (stripProduct ใน src/lib/catalog.ts) */
+create or replace function pos.max_config_bytes() returns int
+  language sql immutable set search_path = '' as $$ select 2097152 $$;
 
 create or replace function pos.max_payload_bytes() returns int
   language sql immutable set search_path = '' as $$ select 65536 $$;
@@ -831,6 +860,77 @@ $$;
 
 
 -- ----------------------------------------------------------------------------
+--  แคตตาล็อกสินค้า (เครื่องกลาง push → มือถือ pull)
+-- ----------------------------------------------------------------------------
+
+/* เครื่องกลางส่งแคตตาล็อกขึ้นไป
+
+   เขียนทับก้อนเดิมทั้งก้อน (ไม่เก็บประวัติ) — แคตตาล็อกรุ่นก่าไม่มีประโยชน์
+   กับใคร และการเก็บไว้ขยายโควตาเปล่าๆ · รหัสสินค้าเก่าอยู่ในบิลที่ออกไปแล้ว */
+create or replace function public.pos_put_config(p_key text, p_rev text, p_payload jsonb)
+  returns jsonb language plpgsql security definer set search_path = '' as
+$$
+declare
+  v_dev pos.devices := pos.require_device('central');
+  v_rev text := nullif(btrim(coalesce(p_rev, '')), '');
+begin
+  if p_key <> 'catalog' then
+    raise exception 'รองรับเฉพาะ key = catalog (ได้มา: %)', p_key using errcode = 'POS06';
+  end if;
+  if v_rev is null or length(v_rev) > 64 then
+    raise exception 'ต้องมีรุ่นของแคตตาล็อก (ยาวไม่เกิน 64 ตัว)' using errcode = 'POS06';
+  end if;
+  if p_payload is null or jsonb_typeof(p_payload) <> 'object' then
+    raise exception 'แคตตาล็อกต้องเป็นวัตถุ JSON' using errcode = 'POS06';
+  end if;
+  if octet_length(p_payload::text) > pos.max_config_bytes() then
+    raise exception 'แคตตาล็อกใหย่เกิน % ไบต์ — ตรวจว่ามีรูปสินค้าติดมาด้วยหรือเปล่า',
+      pos.max_config_bytes() using errcode = 'POS06';
+  end if;
+
+  insert into pos.config (key, rev, payload, updated_by)
+  values ('catalog', v_rev, p_payload, v_dev.uid)
+  on conflict (key) do update
+     set rev = excluded.rev, payload = excluded.payload,
+         updated_at = now(), updated_by = excluded.updated_by;
+
+  return jsonb_build_object('key', 'catalog', 'rev', v_rev, 'updatedMs', pos.ms(now()));
+end
+$$;
+
+/* มือถือดึงแคตตาล็อก
+
+   ส่ง p_known_rev มาด้วยเพื่อเช็คว่ามีอะไรใหม่ไหม ถ้ารุ่นเดิม จะคืนแค่ธง
+   ไม่ส่งก้อนหนักกลับมา — มือถือเปิดหน้านี้ค้างทั้งกะ ถ้าดึงก้อนเต็มทุกรอบ
+   จะกินโควตาเน็ตฟรีโดยเปล่า */
+create or replace function public.pos_get_config(p_key text, p_known_rev text default null)
+  returns jsonb language plpgsql stable security definer set search_path = '' as
+$$
+declare
+  v_c pos.config;
+begin
+  perform pos.require_device();
+
+  if p_key <> 'catalog' then
+    raise exception 'รองรับเฉพาะ key = catalog (ได้มา: %)', p_key using errcode = 'POS06';
+  end if;
+
+  select * into v_c from pos.config where key = 'catalog';
+  if not found then
+    return jsonb_build_object('found', false);
+  end if;
+  if p_known_rev is not null and p_known_rev = v_c.rev then
+    return jsonb_build_object('found', true, 'changed', false, 'rev', v_c.rev,
+                              'updatedMs', pos.ms(v_c.updated_at));
+  end if;
+
+  return jsonb_build_object('found', true, 'changed', true, 'rev', v_c.rev,
+                            'payload', v_c.payload, 'updatedMs', pos.ms(v_c.updated_at));
+end
+$$;
+
+
+-- ----------------------------------------------------------------------------
 --  รูปสลิป
 -- ----------------------------------------------------------------------------
 
@@ -1065,6 +1165,7 @@ declare
     'pos_whoami', 'pos_claim_enroll', 'pos_mint_phone_code', 'pos_list_devices',
     'pos_revoke_device', 'pos_heartbeat', 'pos_submit_ticket', 'pos_ticket_state',
     'pos_pending_tickets', 'pos_settle_ticket', 'pos_review_device_tickets',
+    'pos_put_config', 'pos_get_config',
     'pos_reserve_slip', 'pos_slip_uploaded', 'pos_slip_list',
     'pos_slip_upload_ok', 'pos_slip_read_ok'
   ];
@@ -1121,6 +1222,7 @@ declare
     'pos_whoami', 'pos_claim_enroll', 'pos_mint_phone_code', 'pos_list_devices',
     'pos_revoke_device', 'pos_heartbeat', 'pos_submit_ticket', 'pos_ticket_state',
     'pos_pending_tickets', 'pos_settle_ticket', 'pos_review_device_tickets',
+    'pos_put_config', 'pos_get_config',
     'pos_reserve_slip', 'pos_slip_uploaded', 'pos_slip_list',
     'pos_slip_upload_ok', 'pos_slip_read_ok'
   ];
@@ -1128,7 +1230,7 @@ declare
   v_tb      text;
   v_extra   int;
 begin
-  foreach v_tb in array array['devices', 'enroll_codes', 'tickets', 'slips'] loop
+  foreach v_tb in array array['devices', 'enroll_codes', 'tickets', 'slips', 'config'] loop
     if to_regclass('pos.' || v_tb) is null then
       v_missing := array_append(v_missing, 'ตาราง pos.' || v_tb);
     elsif not (select relrowsecurity from pg_class where oid = to_regclass('pos.' || v_tb)) then
@@ -1207,7 +1309,7 @@ begin
   end if;
 
   -- และห้ามมีใครแตะตารางใน pos ได้ตรงๆ
-  foreach v_tb in array array['devices', 'enroll_codes', 'tickets', 'slips'] loop
+  foreach v_tb in array array['devices', 'enroll_codes', 'tickets', 'slips', 'config'] loop
     if to_regclass('pos.' || v_tb) is not null
        and (has_table_privilege('anon', to_regclass('pos.' || v_tb)::oid, 'select')
             or has_table_privilege('authenticated', to_regclass('pos.' || v_tb)::oid, 'select')) then

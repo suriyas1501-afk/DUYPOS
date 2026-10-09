@@ -195,6 +195,95 @@ describe('ด่านตรวจก่อนออกบิล', () => {
     expect(await db.sales.count()).toBe(0)
   })
 
+  /* ====== ด่านแคตตาล็อก ======
+     `Product.id` เป็น auto-increment ของแต่ละเครื่อง ถ้ามือถือใช้คนละชุด
+     finalizeSale จะตัดสต็อกผิดตัว **แบบที่ด่านเทียบยอดเงินจับไม่ได้เลย**
+     เพราะ items พกราคาของตัวเองมา ⇒ ยอดจะ "ตรง" ทั้งที่สินค้าคนละตัว
+     (TABLE-ORDER-PLAN.md §21 ข้อ 1) */
+  it('มือถือไม่ได้รับแคตตาล็อก (ใบสั่งไม่มี catalogId) → ปฏิเสธ ไม่ตัดสต็อก', async () => {
+    settings = await resetDb({ tableOrderEnabled: true, vatRate: 0, catalogId: 'cat-shop' })
+    productId = await addProduct({ name: 'ข้าวผัด', price: 60, cost: 20, stock: 100 })
+
+    const res = await receiveTicket(ticket(), settings, noPromos)
+
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.reason).toMatch(/ยังไม่ได้รับแคตตาล็อก/)
+    expect(await db.sales.count()).toBe(0)
+    expect(await stockOf(productId)).toBe(100)
+  })
+
+  it('ใบสั่งมาจากแคตตาล็อกคนละชุด → ปฏิเสธ แม้ยอดเงินจะตรงเป๊ะ', async () => {
+    settings = await resetDb({ tableOrderEnabled: true, vatRate: 0, catalogId: 'cat-shop' })
+    productId = await addProduct({ name: 'ข้าวผัด', price: 60, cost: 20, stock: 100 })
+
+    // ยอด 60 ตรงกับที่คิดได้ — ด่านเงินจะปล่อยผ่าน ด่านนี้ต้องเป็นคนจับ
+    const res = await receiveTicket(ticket({ catalogId: 'cat-other' }), settings, noPromos)
+
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.reason).toMatch(/แคตตาล็อกคนละชุด/)
+    expect(await db.sales.count()).toBe(0)
+    expect(await stockOf(productId)).toBe(100)
+  })
+
+  it('แคตตาล็อกตรงกัน → ออกบิลได้ตามปกติ', async () => {
+    settings = await resetDb({ tableOrderEnabled: true, vatRate: 0, catalogId: 'cat-shop' })
+    productId = await addProduct({ name: 'ข้าวผัด', price: 60, cost: 20, stock: 100 })
+
+    const res = await receiveTicket(ticket({ catalogId: 'cat-shop' }), settings, noPromos)
+
+    expect(res.ok).toBe(true)
+    expect(await stockOf(productId)).toBe(99)
+  })
+
+  /* ร้านที่ใช้เครื่องเดียว (ยังไม่เคยมี catalogId) ต้องขายได้เหมือนเดิม
+     ไม่งั้นการเพิ่มด่านนี้จะทำให้ร้านที่ใช้อยู่แล้วขายไม่ได้ทั้งร้าน */
+  it('ร้านที่ยังไม่มี catalogId → ข้ามด่านนี้ ขายได้เหมือนเดิม', async () => {
+    const res = await receiveTicket(ticket(), settings, noPromos)
+    expect(res.ok).toBe(true)
+  })
+
+  /* รุ่นของแคตตาล็อกเป็นคำใบ้ ไม่ใช่ด่าน — ถ้าเอามาปฏิเสธเอง การแก้ราคา
+     หนึ่งครั้งจะทำให้ใบสั่งที่ลูกค้าจ่ายเงินแล้วถูกปฏิเสธทั้งกะ */
+  it('รุ่นแคตตาล็อกต่างกันแต่ยอดตรง → ยังออกบิลได้ (รุ่นไม่ใช่ด่าน)', async () => {
+    settings = await resetDb({
+      tableOrderEnabled: true,
+      vatRate: 0,
+      catalogId: 'cat-shop',
+      catalogRev: 'rev-new',
+    })
+    productId = await addProduct({ name: 'ข้าวผัด', price: 60, cost: 20, stock: 100 })
+
+    const res = await receiveTicket(
+      ticket({ catalogId: 'cat-shop', catalogRev: 'rev-old' }),
+      settings,
+      noPromos,
+    )
+
+    expect(res.ok).toBe(true)
+  })
+
+  it('ยอดไม่ตรง + รุ่นแคตตาล็อกเก่า → เหตุผลต้องบอกว่าให้ส่งแคตตาล็อกใหม่', async () => {
+    settings = await resetDb({
+      tableOrderEnabled: true,
+      vatRate: 0,
+      catalogId: 'cat-shop',
+      catalogRev: 'rev-new',
+    })
+    productId = await addProduct({ name: 'ข้าวผัด', price: 60, cost: 20, stock: 100 })
+
+    const res = await receiveTicket(
+      ticket({ catalogId: 'cat-shop', catalogRev: 'rev-old', paidAmount: 55 }),
+      settings,
+      noPromos,
+    )
+
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.reason).toMatch(/แคตตาล็อกรุ่นเก่า/)
+  })
+
   it('ใบสั่งที่ถูกปฏิเสธไปแล้ว แก้ให้ถูกแล้วส่งใหม่ได้', async () => {
     const bad = await receiveTicket(ticket({ paidAmount: 50 }), settings, noPromos)
     expect(bad.ok).toBe(false)

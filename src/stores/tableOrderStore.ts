@@ -10,6 +10,7 @@ import {
   type CartItem,
 } from './cartStore'
 import { r2 } from '../lib/format'
+import { prefixedId } from '../lib/randomId'
 
 /* =========================================================
    ใบสั่งที่โต๊ะ (โหมดรับออเดอร์ที่โต๊ะด้วยมือถือ) — ขั้นที่ 1-3
@@ -181,30 +182,11 @@ export const DEFAULT_TABLE_COUNT = 20
  * ต้องสร้างครั้งเดียวตอนเริ่มออเดอร์ **ห้ามสร้างใหม่ตอนกดส่ง** ไม่งั้นกดส่งซ้ำ
  * จะได้รหัสใหม่และเครื่องกลางจะออกบิลใบที่สอง
  *
- * crypto.randomUUID มีเฉพาะใน secure context — เปิดผ่าน http://<ไอพีในวง LAN>
- * จะไม่มี จึงต้องมีทางสำรองแบบเดียวกับ SHA-256 ใน src/lib/auth.ts
- *
- * **ทางสำรองต้องเป็น getRandomValues ไม่ใช่ Math.random()** — getRandomValues
- * ใช้ได้นอก secure context (ต่างจาก randomUUID) และ Math.random() ของ V8 เป็น
- * xorshift128+ ซึ่งเดาค่าถัดไปได้จากผลที่เห็นไม่กี่ตัว รหัสใบสั่งที่เดาได้ทำให้
- * เครื่องอื่นจองรหัสที่เรากำลังจะใช้ไว้ก่อน แล้วออเดอร์ของเราถูกปฏิเสธว่า "ซ้ำ"
+ * crypto.randomUUID มีเฉพาะใน secure context — ทางสำรองและเหตุผลที่ห้ามใช้
+ * Math.random() อยู่ใน src/lib/randomId.ts
  */
-function randomToken(bytes = 12): string {
-  const buf = new Uint8Array(bytes)
-  const c = globalThis.crypto
-  if (c?.getRandomValues) {
-    c.getRandomValues(buf)
-  } else {
-    // ไม่มี crypto เลยเป็นกรณีที่ไม่ควรเกิดในเบราว์เซอร์ที่รัน PWA ได้
-    for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 256)
-  }
-  return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
 export function newTicketUid(): string {
-  const c = globalThis.crypto
-  if (typeof c?.randomUUID === 'function') return `t-${c.randomUUID()}`
-  return `t-${randomToken()}`
+  return prefixedId('t')
 }
 
 interface TableOrderState {

@@ -41,6 +41,14 @@ export interface TableOrderTicket {
   verifiedAt: number
   slipId?: string
   slipMissingReason?: string
+  /**
+   * แคตตาล็อกที่มือถือใช้คิดยอดนี้ (src/lib/catalog.ts)
+   *
+   * `catalogId` คือด่านแข็ง: ถ้าไม่ตรงกับของเครื่องกลาง รหัสสินค้าในใบสั่งชี้ไป
+   * คนละตัว ⇒ ห้ามออกบิล · `catalogRev` เป็นแค่คำใบ้ว่ามือถือถือรุ่นเก่า
+   */
+  catalogId?: string
+  catalogRev?: string
 }
 
 export type IntakeResult =
@@ -63,6 +71,7 @@ const EPS = 0.005
 export function validateTicket(
   ticket: TableOrderTicket,
   recomputedPayable: number,
+  settings: Pick<Settings, 'catalogId' | 'catalogRev'>,
 ): { ok: true } | { ok: false; reason: string } {
   if (ticket.schemaVersion !== TICKET_SCHEMA_VERSION) {
     return {
@@ -75,6 +84,27 @@ export function validateTicket(
   if (ticket.verifiedAt == null) {
     return { ok: false, reason: 'ใบสั่งนี้ยังไม่มีการยืนยันว่าเงินเข้า' }
   }
+
+  /* **ด่านแคตตาล็อก — ต้องมาก่อนด่านเงิน**
+
+     `Product.id` เป็น auto-increment ของแต่ละเครื่อง ถ้ามือถือไม่ได้ใช้ชุดรหัส
+     เดียวกับเครื่องนี้ `finalizeSale` จะตัดสต็อกผิดตัวแบบเงียบ และด่านเทียบยอด
+     ข้างล่างจับไม่ได้เลย เพราะ items พกราคาของตัวเองมาเป็น snapshot
+     ⇒ ยอดจะ "ตรง" ทั้งที่สินค้าคนละตัว (ดู src/lib/catalog.ts)
+
+     ข้ามด่านนี้เมื่อร้านยังไม่มี catalogId เลย = ยังไม่เคยใช้โหมดหลายเครื่อง
+     (เครื่องเดียวที่ทั้งรับออเดอร์และออกบิลจะได้ catalogId ของตัวเองอยู่แล้ว
+     จาก ensureCatalogId ตอนเข้าหน้ารับออเดอร์ จึงตรงกับใบสั่งของตัวเองเสมอ) */
+  if (settings.catalogId != null && ticket.catalogId !== settings.catalogId) {
+    return {
+      ok: false,
+      reason:
+        ticket.catalogId == null
+          ? 'เครื่องที่ส่งใบสั่งนี้ยังไม่ได้รับแคตตาล็อกสินค้าของร้าน — รหัสสินค้าที่ส่งมาจึงชี้ไปคนละตัวกับเครื่องนี้ (ถ้าออกบิลจะตัดสต็อกผิดตัว) ให้ส่งแคตตาล็อกไปที่มือถือก่อน แล้วรับออเดอร์ใบนี้ใหม่'
+          : 'ใบสั่งนี้คิดจากแคตตาล็อกคนละชุดกับเครื่องนี้ — รหัสสินค้าจะชี้ไปคนละตัวและสต็อกจะถูกตัดผิด ให้ส่งแคตตาล็อกไปที่มือถือใหม่ แล้วรับออเดอร์ใบนี้ใหม่',
+    }
+  }
+
   /* **ต้องเช็ค NaN ก่อนเทียบ** — `NaN > EPS` เป็น false ทุกกรณี ด่านข้างล่าง
      จึง "ผ่าน" เมื่อยอดใดยอดหนึ่งคิดไม่ได้ แล้วปล่อยบิลที่ total เป็น NaN เข้า DB
      ซึ่งทำให้ทุกการรวมยอดพังทั้งระบบ (แดชบอร์ด รายงาน และ computeShiftSummary
@@ -87,9 +117,19 @@ export function validateTicket(
     }
   }
   if (Math.abs(r2(recomputedPayable) - r2(ticket.paidAmount)) > EPS) {
+    /* รุ่นของแคตตาล็อกเป็น **คำใบ้ ไม่ใช่ด่าน** — ถ้าเอามาปฏิเสธเองจะกลายเป็นว่า
+       เจ้าของร้านแก้ราคาหนึ่งครั้งแล้วใบสั่งที่ลูกค้าจ่ายเงินแล้วถูกปฏิเสธทั้งกะ */
+    const stale =
+      ticket.catalogRev != null &&
+      settings.catalogRev != null &&
+      ticket.catalogRev !== settings.catalogRev
     return {
       ok: false,
-      reason: `ยอดไม่ตรงกับที่ลูกค้าจ่าย (จ่ายมา ฿${r2(ticket.paidAmount)} · คิดได้ ฿${r2(recomputedPayable)}) — อาจมีโปรโมชันเปลี่ยนระหว่างรับออเดอร์ ให้ตรวจก่อนออกบิล`,
+      reason: `ยอดไม่ตรงกับที่ลูกค้าจ่าย (จ่ายมา ฿${r2(ticket.paidAmount)} · คิดได้ ฿${r2(recomputedPayable)}) — ${
+        stale
+          ? 'มือถือเครื่องนี้ถือแคตตาล็อกรุ่นเก่ากว่าเครื่องกลาง ให้ส่งแคตตาล็อกไปใหม่แล้วตรวจยอดก่อนออกบิล'
+          : 'อาจมีโปรโมชันเปลี่ยนระหว่างรับออเดอร์ ให้ตรวจก่อนออกบิล'
+      }`,
     }
   }
   return { ok: true }
@@ -149,7 +189,7 @@ export async function receiveTicket(
         }
       }
 
-      const check = validateTicket(ticket, totals.payable)
+      const check = validateTicket(ticket, totals.payable, settings)
       if (!check.ok) {
         /* บันทึกว่าปฏิเสธเพราะอะไร — **ต้องอยู่ในทรานแซกชันนี้** และห้ามทับแถว 'billed'
            (ด่านข้างบนคัดกรองไปแล้ว) · คง createdAt เดิมไว้ ไม่งั้นเวลาที่ใช้ตามเรื่องจะเพี้ยน */

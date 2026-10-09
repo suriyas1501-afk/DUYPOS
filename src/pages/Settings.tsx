@@ -4,6 +4,14 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import QRCode from 'qrcode'
 import { db, DEFAULT_SETTINGS } from '../db/db'
 import { getDeviceRole, setDeviceRole } from '../lib/tableOrderIntake'
+import {
+  applyCatalogSnapshot,
+  buildCatalogSnapshot,
+  catalogApplyBlockers,
+  downloadCatalogFile,
+  readCatalogFile,
+  type CatalogSnapshot,
+} from '../lib/catalog'
 import { useCurrentShift, useSettings } from '../db/hooks'
 import type { BusinessMode, Sale, SaleItem, Settings as AppSettings } from '../db/types'
 import {
@@ -308,6 +316,13 @@ export default function Settings() {
   const [tableBusy, setTableBusy] = useState(false)
   /** บทบาทของ 'เครื่องนี้' — เก็บใน appState ไม่ใช่ settings เพราะเป็นค่าของเครื่อง ไม่ใช่ของร้าน */
   const deviceRole = useLiveQuery(() => getDeviceRole(), [])
+  /** แคตตาล็อกสินค้าที่ส่งให้มือถือ (src/lib/catalog.ts) */
+  const [catalogBusy, setCatalogBusy] = useState(false)
+  const catalogInputRef = useRef<HTMLInputElement>(null)
+  /** ก้อนที่รออยู่ + เหตุที่ต้องยืนยันก่อนทับ (มีบิลขาย/บิลพักอยู่) */
+  const [catalogAsk, setCatalogAsk] = useState<{ snap: CatalogSnapshot; why: string } | null>(
+    null,
+  )
   /** ยืนยันก่อนปิดด่านตรวจสลิป (ปิดแล้วเสี่ยงทำอาหารทิ้งจากสลิปปลอม) */
   const [verifyOffOpen, setVerifyOffOpen] = useState(false)
 
@@ -538,6 +553,65 @@ export default function Settings() {
 
   // ----- รับออเดอร์ที่โต๊ะ -----
 
+  /**
+   * ส่งออกแคตตาล็อกจากเครื่องกลาง
+   *
+   * ทำไมเป็นไฟล์ ไม่ใช่คลาวด์: ยังไม่มีโค้ดคลาวด์ฝั่งแอป (TABLE-ORDER-PLAN.md §21)
+   * แต่ถ้าไม่มีทางส่งแคตตาล็อกเลย ด่าน catalogId จะปฏิเสธมือถือทุกเครื่อง
+   * ก้อนที่ส่งเป็นก้อนเดียวกับที่ pos_put_config จะใช้ตอนต่อคลาวด์
+   */
+  const doExportCatalog = async () => {
+    if (catalogBusy) return
+    setCatalogBusy(true)
+    try {
+      const snap = await buildCatalogSnapshot()
+      downloadCatalogFile(snap)
+      toast.success(
+        `ส่งออกแล้ว ${snap.products.length} รายการ · รุ่น ${snap.catalogRev.slice(0, 8)} — ส่งไฟล์นี้ไปที่มือถือแล้วกดนำเข้า`,
+      )
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'ส่งออกแคตตาล็อกไม่สำเร็จ')
+    } finally {
+      setCatalogBusy(false)
+    }
+  }
+
+  const applyCatalog = async (snap: CatalogSnapshot, force: boolean) => {
+    setCatalogBusy(true)
+    try {
+      const res = await applyCatalogSnapshot(snap, { force })
+      setCatalogAsk(null)
+      toast.success(
+        `นำเข้าแล้ว ${res.products} รายการ · รุ่น ${res.catalogRev.slice(0, 8)} กำลังรีโหลด...`,
+      )
+      setTimeout(() => location.reload(), 700)
+    } catch (e) {
+      setCatalogBusy(false)
+      toast.error(e instanceof Error ? e.message : 'นำเข้าแคตตาล็อกไม่สำเร็จ')
+    }
+  }
+
+  /** นำเข้าที่มือถือ — ถามก่อนถ้าเครื่องนี้มีบิลอยู่ (การนำเข้าล้างรายการสินค้าเดิม) */
+  const doImportCatalog = async (file: File) => {
+    if (catalogBusy) return
+    setCatalogBusy(true)
+    try {
+      const snap = await readCatalogFile(file)
+      const { sales, held } = await catalogApplyBlockers()
+      if (sales > 0 || held > 0) {
+        setCatalogBusy(false)
+        setCatalogAsk({
+          snap,
+          why: `เครื่องนี้มีบิลขาย ${sales} ใบ และบิลพัก ${held} ใบ`,
+        })
+        return
+      }
+      await applyCatalog(snap, false)
+    } catch (e) {
+      setCatalogBusy(false)
+      toast.error(e instanceof Error ? e.message : 'นำเข้าแคตตาล็อกไม่สำเร็จ')
+    }
+  }
   const saveTableOrder = async () => {
     if (tableBusy) return
     const n = Math.floor(toNum(tableCount))
@@ -1250,6 +1324,74 @@ export default function Settings() {
             )}
 
             {tableOrderEnabled && (
+              <div className="mt-4 border-t border-slate-100 pt-4">
+                <div className="text-sm font-medium text-slate-700">แคตตาล็อกสินค้าสำหรับมือถือ</div>
+                <p className="mt-0.5 text-xs leading-relaxed text-slate-400">
+                  รหัสสินค้าเป็นเลขของ{' '}
+                  <span className="font-medium text-slate-600">แต่ละเครื่องแยกกัน</span> — มือถือที่ยัง
+                  ไม่ได้รับแคตตาล็อกจะมีสินค้าตัวอย่างที่ใช้เลขชุดเดียวกับสินค้าจริง ถ้าปล่อยไว้
+                  เครื่องกลางจะ{' '}
+                  <span className="font-medium text-rose-600">ตัดสต็อกผิดตัวแบบไม่มีใครรู้</span>{' '}
+                  (ยอดเงินตรง เพราะใบสั่งพกราคามาเอง) · เครื่องกลางจึงปฏิเสธใบสั่งจากมือถือที่ยังไม่ได้รับ
+                  แคตตาล็อก
+                </p>
+                {settings.catalogId != null && (
+                  <p className="mt-2 text-xs text-slate-500">
+                    ชุดสินค้าของเครื่องนี้:{' '}
+                    <span className="font-mono text-slate-700">
+                      {settings.catalogId.slice(0, 12)}
+                    </span>
+                    {settings.catalogRev != null && (
+                      <>
+                        {' · '}รุ่น{' '}
+                        <span className="font-mono text-slate-700">
+                          {settings.catalogRev.slice(0, 8)}
+                        </span>
+                      </>
+                    )}
+                  </p>
+                )}
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    icon="download"
+                    disabled={catalogBusy}
+                    onClick={() => void doExportCatalog()}
+                  >
+                    ส่งออกจากเครื่องกลาง
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    icon="upload"
+                    disabled={catalogBusy}
+                    onClick={() => catalogInputRef.current?.click()}
+                  >
+                    นำเข้าที่มือถือ
+                  </Button>
+                </div>
+                <p className="mt-2 text-xs leading-relaxed text-slate-400">
+                  ทำที่เครื่องกลาง: กดส่งออก แล้วส่งไฟล์ไปที่มือถือ (AirDrop / แชต / USB) ·
+                  ทำที่มือถือ: กดนำเข้าแล้วเลือกไฟล์นั้น ·{' '}
+                  <span className="font-medium text-slate-600">
+                    แก้ราคาหรือเพิ่มสินค้าแล้วต้องส่งใหม่
+                  </span>{' '}
+                  ไม่งั้นยอดที่มือถือคิดจะไม่ตรงกับเครื่องกลาง
+                </p>
+                <input
+                  ref={catalogInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) void doImportCatalog(f)
+                    e.target.value = ''
+                  }}
+                />
+              </div>
+            )}
+
+            {tableOrderEnabled && (
               <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2.5 text-xs leading-relaxed text-sky-800">
                 <Icon name="alert" size={16} className="mt-0.5 shrink-0" />
                 <span>
@@ -1816,6 +1958,21 @@ export default function Settings() {
       </div>
 
       {/* ===== ยืนยันปิดด่านตรวจสลิปก่อนส่งเข้าครัว ===== */}
+      <ConfirmDialog
+        open={catalogAsk != null}
+        danger
+        title="นำเข้าแคตตาล็อกทับของเดิม"
+        message={
+          catalogAsk == null
+            ? ''
+            : `${catalogAsk.why} — การนำเข้าจะล้างรายการสินค้า หมวด และโปรโมชันเดิมทิ้งทั้งหมด ทำให้ประวัติการขายของเครื่องนี้อ่านชื่อสินค้าไม่ได้ · ถ้านี่คือมือถือรับออเดอร์ที่ไม่ได้ออกบิลเอง กดยืนยันได้`
+        }
+        confirmLabel="ยืนยัน นำเข้าทับ"
+        onConfirm={() => {
+          if (catalogAsk != null) void applyCatalog(catalogAsk.snap, true)
+        }}
+        onClose={() => setCatalogAsk(null)}
+      />
       <ConfirmDialog
         open={verifyOffOpen}
         onClose={() => setVerifyOffOpen(false)}

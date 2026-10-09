@@ -1,5 +1,6 @@
 import { db } from '../db/db'
 import type { SlipQueueItem } from '../db/types'
+import { prefixedId } from './randomId'
 
 /* =========================================================
    รูปสลิปโอนเงิน — ย่อ เก็บ และล้างของเก่า
@@ -145,20 +146,11 @@ export async function resizePhoto(
 /**
  * สร้างรหัสรูปสลิป — ต้องไม่ซ้ำข้ามเครื่อง เพราะจะเป็นชื่อไฟล์บนคลาวด์
  *
- * **ทางสำรองต้องเป็น getRandomValues ไม่ใช่ Math.random()** (เหตุผลเดียวกับ
- * newTicketUid ใน src/stores/tableOrderStore.ts) — ชื่อไฟล์ที่เดาได้ทำให้
- * เครื่องอื่นจองชื่อไว้ก่อนได้ แล้วรูปสลิปซึ่งเป็นหลักฐานการรับเงินจะอัปโหลดไม่ขึ้น
+ * ชื่อไฟล์ที่เดาได้ทำให้เครื่องอื่นจองชื่อไว้ก่อนได้ แล้วรูปสลิปซึ่งเป็นหลักฐาน
+ * การรับเงินจะอัปโหลดไม่ขึ้น — ตัวสุ่มและเหตุผลอยู่ใน src/lib/randomId.ts
  */
 export function newSlipId(): string {
-  const c = globalThis.crypto
-  if (typeof c?.randomUUID === 'function') return `s-${c.randomUUID()}`
-  const buf = new Uint8Array(12)
-  if (c?.getRandomValues) {
-    c.getRandomValues(buf)
-  } else {
-    for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 256)
-  }
-  return `s-${Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('')}`
+  return prefixedId('s')
 }
 
 /**

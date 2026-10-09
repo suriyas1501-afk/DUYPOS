@@ -194,22 +194,50 @@ export async function seedSampleData(): Promise<{ added: string[]; skipped: stri
 /**
  * สร้างบัญชีเจ้าของร้านให้ 1 คนถ้ายังไม่มีพนักงานเลย (PIN เริ่มต้น 1234)
  * เรียกทุกครั้งที่เปิดแอป เพื่อไม่ให้เปิดระบบพนักงานแล้วเข้าใช้งานไม่ได้
+ *
+ * **ต้องอยู่ในทรานแซกชัน** — `staff.code` เป็น unique index ถ้าอ่านจำนวนแล้ว
+ * เพิ่มแถวแบบไม่ล็อก สองที่ที่เรียกพร้อมกันจะเห็น 0 ทั้งคู่แล้วเพิ่ม 'E01'
+ * ทั้งคู่ ⇒ ตัวที่สองชน ConstraintError ซึ่ง **โยนทะลุออกจาก initDb()**
+ * ทำให้ `setReady(true)` ใน App.tsx ไม่เคยทำงาน แล้วแอปค้างที่
+ * "กำลังเตรียมระบบ…" ตลอดไป (= เปิดร้านไม่ได้เลย)
+ *
+ * เกิดได้จริงสองทาง: React StrictMode เรียก effect สองรอบในโหมดพัฒนา
+ * และการเปิดแอปสองแท็บพร้อมกันบนเครื่องที่ข้อมูลยังว่าง
+ * ทรานแซกชัน readwrite บน store เดียวกันถูกจัดคิวให้ไม่ทับกัน ตัวที่สองจึงเห็น 1
  */
 export async function ensureOwnerStaff(): Promise<void> {
-  if ((await db.staff.count()) > 0) return
-  await db.staff.add({
-    code: 'E01',
-    name: 'เจ้าของร้าน',
-    role: 'owner',
-    pinHash: await hashPin('1234'),
-    active: true,
-    note: 'บัญชีเริ่มต้นของระบบ — กรุณาเปลี่ยน PIN',
-    createdAt: Date.now(),
+  // แฮช PIN ก่อนเข้าทรานแซกชัน — crypto.subtle เป็น await ที่ไม่ใช่ Dexie
+  // ถ้า await มันกลางทรานแซกชัน Dexie จะปิดทรานแซกชันทิ้งก่อนเขียนเสร็จ
+  const pinHash = await hashPin('1234')
+  await db.transaction('rw', db.staff, async () => {
+    if ((await db.staff.count()) > 0) return
+    await db.staff.add({
+      code: 'E01',
+      name: 'เจ้าของร้าน',
+      role: 'owner',
+      pinHash,
+      active: true,
+      note: 'บัญชีเริ่มต้นของระบบ — กรุณาเปลี่ยน PIN',
+      createdAt: Date.now(),
+    })
   })
 }
 
+/** กันการเริ่มระบบซ้อนกันในแท็บเดียว (StrictMode เรียก effect สองรอบ) */
+let initOnce: Promise<void> | null = null
+
 /** เรียกตอนเปิดแอป — ตั้งค่าเริ่มต้น + ข้อมูลตัวอย่างในการใช้งานครั้งแรก */
-export async function initDb() {
+export function initDb(): Promise<void> {
+  initOnce ??= runInit()
+  return initOnce
+}
+
+/** มีไว้ให้เทสต์เริ่มใหม่ได้ — โค้ดแอปไม่ต้องเรียก */
+export function resetInitDbOnce(): void {
+  initOnce = null
+}
+
+async function runInit(): Promise<void> {
   // ขอให้เบราว์เซอร์กันข้อมูลไม่ให้ถูกลบอัตโนมัติเมื่อพื้นที่ตึง
   try {
     if (navigator.storage?.persist && !(await navigator.storage.persisted())) {

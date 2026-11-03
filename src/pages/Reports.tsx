@@ -581,7 +581,7 @@ export default function Reports() {
   const useBars = daily.length <= 31
 
   return (
-    <div className="h-full overflow-y-auto p-6">
+    <div className="h-full overflow-y-auto p-3 md:p-6">
       <PageHeader
         title="รายงาน"
         subtitle="สรุปยอดขายและกราฟวิเคราะห์ตามช่วงเวลา"

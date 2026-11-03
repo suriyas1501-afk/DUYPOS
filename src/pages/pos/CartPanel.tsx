@@ -201,7 +201,8 @@ export default function CartPanel({
   }
 
   return (
-    <aside className="flex w-[380px] shrink-0 flex-col border-l border-slate-200 bg-white">
+    /* มือถือ: ถูกวางในแผ่นเต็มจอจึงกินเต็มความกว้าง · จอใหญ่: คอลัมน์ 380px ข้างกริดสินค้า */
+    <aside className="flex w-full min-w-0 shrink-0 flex-col bg-white md:w-[380px] md:border-l md:border-slate-200">
       {/* ===== แถบสมาชิก ===== */}
       <div className="shrink-0 border-b border-slate-100 p-3">
         {member ? (

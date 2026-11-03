@@ -90,7 +90,7 @@ export default function Accounting() {
   )
 
   return (
-    <div className="h-full overflow-y-auto p-6">
+    <div className="h-full overflow-y-auto p-3 md:p-6">
       <PageHeader title="บัญชี" subtitle="งบกำไรขาดทุน รายจ่าย ภาษี และปิดยอดรายวัน" />
 
       {/* ===== แท็บ segmented 5 แท็บ ===== */}

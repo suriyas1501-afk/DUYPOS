@@ -455,7 +455,7 @@ export default function StockCountPage() {
      ========================================================= */
   if (!session) {
     return (
-      <div className="h-full overflow-y-auto p-6">
+      <div className="h-full overflow-y-auto p-3 md:p-6">
         <PageHeader
           title="นับสต็อก"
           subtitle="นับของจริงเทียบกับจำนวนในระบบ แล้วปรับยอดทีเดียวทั้งใบ"
@@ -584,7 +584,7 @@ export default function StockCountPage() {
   )
 
   return (
-    <div className="h-full overflow-y-auto p-6">
+    <div className="h-full overflow-y-auto p-3 md:p-6">
       <PageHeader
         title={`นับสต็อก · ${session.docNo}`}
         subtitle="กรอกจำนวนที่นับได้จริง ระบบจะคำนวณผลต่างและมูลค่าให้ — ยังไม่ปรับสต็อกจนกดยืนยัน"

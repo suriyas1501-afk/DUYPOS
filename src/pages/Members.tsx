@@ -441,7 +441,7 @@ export default function Members() {
   }, [members, search])
 
   return (
-    <div className="h-full overflow-y-auto p-6">
+    <div className="h-full overflow-y-auto p-3 md:p-6">
       <PageHeader
         title="สมาชิก"
         subtitle={members ? `จำนวนสมาชิกทั้งหมด ${members.length} คน` : undefined}

@@ -9,7 +9,7 @@ import {
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
-import { useCurrentShift, useSettings } from '../db/hooks'
+import { useCurrentShift, useIsPhone, useSettings } from '../db/hooks'
 import type { Product, ProductUnit } from '../db/types'
 import { useCart } from '../stores/cartStore'
 import { useAuth } from '../stores/authStore'
@@ -180,6 +180,9 @@ export default function Pos() {
   const [optionTarget, setOptionTarget] = useState<PickTarget | null>(null)
   const [customOpen, setCustomOpen] = useState(false)
   const [payOpen, setPayOpen] = useState(false)
+  const isPhone = useIsPhone()
+  /** มือถือ: ตะกร้าเป็นแผ่นเต็มจอที่เปิด-ปิดได้ ไม่ใช่คอลัมน์ที่อยู่ค้างข้างจอ */
+  const [cartOpen, setCartOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
 
   const allProducts = useLiveQuery(() => db.products.toArray(), [])
@@ -300,13 +303,15 @@ export default function Pos() {
   const finishSale = () => {
     useCart.getState().clear()
     setPayOpen(false)
+    // ขายจบแล้วต้องกลับไปหน้าเลือกสินค้าเอง ไม่ใช่ค้างอยู่ที่ตะกร้าเปล่า
+    setCartOpen(false)
     setTimeout(() => searchRef.current?.focus(), 50)
   }
 
   return (
     <div className="flex h-full">
       {/* ===== ฝั่งซ้าย: เลือกสินค้า ===== */}
-      <section className="flex min-w-0 flex-1 flex-col gap-3 bg-slate-100 p-4">
+      <section className="flex min-w-0 flex-1 flex-col gap-3 bg-slate-100 p-3 md:p-4">
         {/* เตือนเมื่อตั้งค่าให้ต้องเปิดกะก่อนขาย แต่ยังไม่มีกะเปิดอยู่ (finalizeSale จะปฏิเสธการปิดบิล) */}
         {settings.shiftEnabled && settings.requireShiftToSell && !shift && !shiftLoading && (
           <div className="flex shrink-0 items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-sm text-amber-800">
@@ -379,19 +384,87 @@ export default function Pos() {
             </div>
           )}
         </div>
+
+        {/* แถบตะกร้าของมือถือ — จอ 390px วางตะกร้าไว้ข้างๆ ไม่ได้ (ตะกร้ากว้าง 380px
+            จะไม่เหลือที่ให้กริดสินค้าเลย) จึงยุบเป็นแถบล่างแล้วกางเป็นแผ่นเต็มจอแทน */}
+        {isPhone && (
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCartOpen(true)}
+              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-left"
+            >
+              <span className="relative shrink-0 text-slate-500">
+                <Icon name="cart" size={20} />
+                {items.length > 0 && (
+                  <span className="absolute -top-1.5 -right-2 flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-600 px-1 text-[10px] font-bold text-white">
+                    {items.length}
+                  </span>
+                )}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[11px] text-slate-400">
+                  {items.length > 0 ? 'ดูตะกร้า / แก้ไข' : 'ตะกร้าว่าง'}
+                </span>
+                <span className="block truncate text-sm font-bold text-slate-800">
+                  ฿{baht(totals.payable)}
+                </span>
+              </span>
+            </button>
+            <Button
+              size="lg"
+              icon="cash"
+              disabled={items.length === 0}
+              onClick={() => setPayOpen(true)}
+              className="shrink-0"
+            >
+              ชำระเงิน
+            </Button>
+          </div>
+        )}
       </section>
 
-      {/* ===== ฝั่งขวา: ตะกร้า ===== */}
-      <CartPanel
-        settings={settings}
-        totals={totals}
-        member={member}
-        coupon={coupon}
-        couponLoading={couponLoading}
-        onCheckout={() => {
-          if (items.length > 0) setPayOpen(true)
-        }}
-      />
+      {/* ===== ตะกร้า ===== */}
+      {isPhone ? (
+        cartOpen && (
+          <div className="fixed inset-0 z-40 flex flex-col bg-white">
+            <div className="flex shrink-0 items-center gap-1 border-b border-slate-200 px-2 py-2">
+              <button
+                type="button"
+                onClick={() => setCartOpen(false)}
+                aria-label="กลับไปเลือกสินค้า"
+                className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl text-slate-600 hover:bg-slate-100"
+              >
+                <Icon name="chevronleft" size={20} />
+              </button>
+              <span className="text-sm font-bold text-slate-800">ตะกร้า</span>
+            </div>
+            <div className="flex min-h-0 flex-1">
+              <CartPanel
+                settings={settings}
+                totals={totals}
+                member={member}
+                coupon={coupon}
+                couponLoading={couponLoading}
+                onCheckout={() => {
+                  if (items.length > 0) setPayOpen(true)
+                }}
+              />
+            </div>
+          </div>
+        )
+      ) : (
+        <CartPanel
+          settings={settings}
+          totals={totals}
+          member={member}
+          coupon={coupon}
+          couponLoading={couponLoading}
+          onCheckout={() => {
+            if (items.length > 0) setPayOpen(true)
+          }}
+        />
+      )}
 
       {/* ===== โมดัล ===== */}
       {optionTarget && (

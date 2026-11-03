@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
 import { useCurrentShift, useOnline, usePermissions, useSettings } from '../db/hooks'
@@ -181,6 +181,8 @@ export default function Layout() {
   const settings = useSettings()
   const online = useOnline()
   const navigate = useNavigate()
+  const location = useLocation()
+  const [menuOpen, setMenuOpen] = useState(false)
   const { enabled: staffEnabled, staff, can } = usePermissions()
   const { shift } = useCurrentShift()
   const { lock, logout, touch } = useAuth()
@@ -211,8 +213,10 @@ export default function Layout() {
 
   return (
     <div className="flex h-full">
-      {/* ===== แถบนำทางซ้าย ===== */}
-      <aside className="flex w-16 shrink-0 flex-col border-r border-slate-200 bg-white lg:w-56">
+      {/* ===== แถบนำทางซ้าย =====
+          จอมือถือซ่อนทิ้ง แล้วใช้แถบบน + ลิ้นชักเมนูแทน (แถบไอคอนกิน 64px
+          ซึ่งบน iPhone 390px คือ 16% ของจอ และยังเหลือเมนูให้อ่านไม่ออกอยู่ดี) */}
+      <aside className="hidden w-16 shrink-0 flex-col border-r border-slate-200 bg-white md:flex lg:w-56">
         <div className="flex items-center gap-2.5 px-3 py-4 lg:px-4">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-lg font-bold text-white">
             ฿
@@ -318,11 +322,142 @@ export default function Layout() {
 
       {/* ===== พื้นที่เนื้อหา ===== */}
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* แถบบนของมือถือ — แทนแถบนำทางซ้ายที่ถูกซ่อน */}
+        <header className="flex shrink-0 items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 md:hidden">
+          <button
+            type="button"
+            onClick={() => setMenuOpen(true)}
+            aria-label="เปิดเมนู"
+            className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-xl text-slate-600 hover:bg-slate-100"
+          >
+            <Icon name="menu" size={20} />
+          </button>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-bold text-slate-800">{settings.shopName}</div>
+            <div className="truncate text-[11px] text-slate-400">
+              {items.find((i) => i.to === location.pathname)?.label ?? settings.branch}
+            </div>
+          </div>
+          {shiftEnabled && (
+            <button
+              type="button"
+              onClick={() => navigate('/shift')}
+              className={`shrink-0 cursor-pointer rounded-lg px-2 py-1 text-[11px] font-medium ${
+                shift ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+              }`}
+            >
+              {shift ? 'เปิดกะอยู่' : 'ยังไม่เปิดกะ'}
+            </button>
+          )}
+          {!online && (
+            <span
+              className="shrink-0 rounded-lg bg-amber-50 p-1.5 text-amber-700"
+              title="ออฟไลน์ — ขายต่อได้ ข้อมูลบันทึกลงเครื่อง"
+            >
+              <Icon name="wifioff" size={15} />
+            </span>
+          )}
+          {staffEnabled && staff && (
+            <button
+              type="button"
+              onClick={lock}
+              aria-label="ล็อกหน้าจอ"
+              className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg bg-emerald-600 text-xs font-bold text-white"
+            >
+              {staff.name.trim().charAt(0) || '?'}
+            </button>
+          )}
+        </header>
+
         <BackupReminder />
         <div className="min-h-0 flex-1 overflow-hidden">
           <Outlet />
         </div>
       </main>
+
+      {/* ===== ลิ้นชักเมนูของมือถือ ===== */}
+      {menuOpen && (
+        <div className="fixed inset-0 z-40 flex md:hidden">
+          <button
+            type="button"
+            aria-label="ปิดเมนู"
+            onClick={() => setMenuOpen(false)}
+            className="absolute inset-0 cursor-default bg-slate-900/40"
+          />
+          <nav className="relative flex h-full w-64 max-w-[82%] flex-col bg-white shadow-xl">
+            <div className="flex items-center gap-2.5 border-b border-slate-100 px-4 py-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-lg font-bold text-white">
+                ฿
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-bold text-slate-800">{settings.shopName}</div>
+                <div className="truncate text-xs text-slate-400">{settings.branch}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMenuOpen(false)}
+                aria-label="ปิดเมนู"
+                className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-xl text-slate-400 hover:bg-slate-100"
+              >
+                <Icon name="x" size={18} />
+              </button>
+            </div>
+
+            <div className="flex-1 space-y-1 overflow-y-auto p-2">
+              {items.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.end}
+                  onClick={() => setMenuOpen(false)}
+                  className={({ isActive }) =>
+                    `flex items-center gap-3 rounded-xl px-3 py-3 text-sm transition-colors ${
+                      isActive
+                        ? 'bg-emerald-50 font-semibold text-emerald-700'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`
+                  }
+                >
+                  <Icon name={item.icon} size={19} />
+                  {item.label}
+                </NavLink>
+              ))}
+            </div>
+
+            {staffEnabled && staff && (
+              <div className="border-t border-slate-100 p-2">
+                <div className="px-2 py-1 text-xs text-slate-400">
+                  {staff.name} · {ROLE_LABEL[staff.role]}
+                </div>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      lock()
+                    }}
+                    className="flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                  >
+                    <Icon name="lock" size={14} />
+                    ล็อกหน้าจอ
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      logout()
+                    }}
+                    className="flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-rose-600"
+                  >
+                    <Icon name="logout" size={14} />
+                    ออกจากระบบ
+                  </button>
+                </div>
+              </div>
+            )}
+          </nav>
+        </div>
+      )}
     </div>
   )
 }

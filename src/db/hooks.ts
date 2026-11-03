@@ -10,6 +10,37 @@ export function useSettings(): Settings {
   return useLiveQuery(() => db.settings.get(1), [], DEFAULT_SETTINGS) ?? DEFAULT_SETTINGS
 }
 
+/**
+ * จอแคบระดับมือถือหรือไม่ (ต่ำกว่าเบรกพอยต์ md ของ Tailwind = 768px)
+ *
+ * ใช้ตัดสิน **โครงหน้า** ที่ซ่อนด้วย CSS ไม่ได้ เช่นหน้าขายที่ต้องเลือกว่าจะวางตะกร้า
+ * ไว้ข้างๆ หรือเปิดเป็นแผ่นเต็มจอ — ถ้าใช้ `hidden md:flex` จะต้อง mount ตะกร้าสองชุด
+ * พร้อมกัน ซึ่งทั้งคู่มี state ของตัวเอง (ส่วนลดท้ายบิลที่กางอยู่ โมดัลที่เปิดค้าง)
+ * ส่วนงานที่แค่ซ่อน/แสดงข้อความหรือไอคอน ให้ใช้คลาสของ Tailwind ตามเดิม
+ *
+ * ต้องคืนค่าถูกตั้งแต่เรนเดอร์แรก — เริ่มที่ false แล้วค่อยแก้ใน effect
+ * จะทำให้มือถือเห็นโครงจอใหญ่แวบหนึ่งก่อน แล้วตะกร้าถูก unmount ทิ้งทันที
+ */
+export function useIsPhone(): boolean {
+  const query = '(max-width: 767px)'
+  const [phone, setPhone] = useState(() => window.matchMedia(query).matches)
+  useEffect(() => {
+    const mq = window.matchMedia(query)
+    // เผื่อบางสภาพแวดล้อมที่ไม่ยิง event 'change' ตอนขนาดจอเปลี่ยน (พบในเบราว์เซอร์
+    // ที่จำลองขนาดจอ) จึงฟัง resize ไว้ด้วย — setState ด้วยค่าเดิม React ข้ามให้เอง
+    const sync = () => setPhone(mq.matches)
+    mq.addEventListener('change', sync)
+    window.addEventListener('resize', sync)
+    // หมุนจอระหว่างที่ effect ยังไม่ผูก listener ⇒ อ่านค่าสดอีกครั้งกันพลาด
+    sync()
+    return () => {
+      mq.removeEventListener('change', sync)
+      window.removeEventListener('resize', sync)
+    }
+  }, [])
+  return phone
+}
+
 /** สถานะการเชื่อมต่ออินเทอร์เน็ต */
 export function useOnline(): boolean {
   const [online, setOnline] = useState(navigator.onLine)

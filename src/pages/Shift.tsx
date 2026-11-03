@@ -608,7 +608,7 @@ export default function Shift() {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-6">
+    <div className="h-full overflow-y-auto p-3 md:p-6">
       <PageHeader
         title="กะ / ลิ้นชัก"
         subtitle="เปิด-ปิดกะ นับเงินในลิ้นชัก และตรวจผลต่างเงินสดของแต่ละกะ"

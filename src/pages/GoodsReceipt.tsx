@@ -292,7 +292,7 @@ export default function GoodsReceiptPage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-6">
+    <div className="h-full overflow-y-auto p-3 md:p-6">
       <PageHeader
         title="รับของเข้า"
         subtitle="รับของทีเดียวหลายรายการ อัปเดตต้นทุนสินค้าและลงบัญชีรายจ่ายให้อัตโนมัติ"

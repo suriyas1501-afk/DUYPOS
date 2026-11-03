@@ -95,7 +95,7 @@ export default function Products() {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-6">
+    <div className="h-full overflow-y-auto p-3 md:p-6">
       <PageHeader
         title="สินค้า"
         subtitle={products ? `ทั้งหมด ${products.length} รายการ` : undefined}

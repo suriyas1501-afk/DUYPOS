@@ -17,3 +17,6 @@ yarn-error.log*
 # ค่าตั้งเฉพาะเครื่องของนักพัฒนา (ทับค่าใน .env ได้) — ห้ามเข้า git
 .env.local
 .env.*.local
+
+# แพ็กเกจที่ build ไว้แจก (ไม่ต้องเข้า git)
+release/

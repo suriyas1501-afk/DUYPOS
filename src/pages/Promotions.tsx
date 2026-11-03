@@ -298,7 +298,7 @@ export default function Promotions() {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-6">
+    <div className="h-full overflow-y-auto p-3 md:p-6">
       <div className="mx-auto max-w-4xl">
         <PageHeader
           title="โปรโมชัน"

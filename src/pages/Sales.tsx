@@ -941,7 +941,7 @@ export default function Sales() {
   const visible = useMemo(() => filtered.slice(0, limit), [filtered, limit])
 
   return (
-    <div className="h-full overflow-y-auto p-6">
+    <div className="h-full overflow-y-auto p-3 md:p-6">
       <PageHeader
         title="ประวัติการขาย"
         subtitle="ดูบิลย้อนหลัง พิมพ์ใบเสร็จ คืนสินค้าบางรายการ และยกเลิกบิล"

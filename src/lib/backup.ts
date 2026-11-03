@@ -141,6 +141,50 @@ export async function exportBackup(): Promise<'saved' | 'downloaded'> {
   return 'downloaded'
 }
 
+/* =========================================================
+   แชร์ไฟล์สำรองผ่านแผงแชร์ของระบบ — ทางของ iPad / iPhone
+
+   iOS ไม่มี showDirectoryPicker ⇒ ตั้งสำรองอัตโนมัติลงโฟลเดอร์ไม่ได้เลย
+   และการดาวน์โหลดผ่านลิงก์ในแอปที่ติดตั้งบนหน้าจอโฮม (standalone) ก็เอาแน่ไม่ได้
+   ทางที่เหลือคือยิงไฟล์เข้าแผงแชร์ แล้วให้ผู้ใช้เลือก Google Drive / บันทึกลงไฟล์
+   = ขึ้นคลาวด์ได้ในแท็ปเดียวจากในแอป ไม่ต้องไปงมไฟล์ในแอป Files ทีหลัง
+   ========================================================= */
+
+/** เครื่องนี้ส่ง "ไฟล์" เข้าแผงแชร์ได้ไหม (ไม่ใช่ทุกเบราว์เซอร์ที่แชร์ไฟล์ได้ แม้จะมี navigator.share) */
+export function backupShareSupported(): boolean {
+  if (typeof navigator.share !== 'function' || typeof navigator.canShare !== 'function') return false
+  try {
+    const probe = new File(['{}'], 'pos-backup-probe.json', { type: 'application/json' })
+    return navigator.canShare({ files: [probe] })
+  } catch {
+    return false
+  }
+}
+
+/**
+ * ส่งไฟล์สำรองเข้าแผงแชร์
+ *
+ * **ไม่เรียก markBackedUp() เอง** เหมือนทาง 'downloaded' ด้วยเหตุผลเดียวกัน:
+ * บน iOS มีรายงานว่า promise ของ navigator.share ไม่ resolve ตามสเปกในบางกรณี
+ * ⇒ เชื่อผลของมันแล้วนับว่า "สำรองแล้ว" = แถบเตือนหายไปทั้งที่ยังไม่มีไฟล์จริง
+ * ให้ผู้เรียกถามยืนยันกับผู้ใช้ก่อนค่อยบันทึกเวลาสำรอง
+ */
+export async function shareBackupFile(): Promise<'shared' | 'cancelled'> {
+  const json = await buildBackupJson()
+  const file = new File([json], backupFileName(), { type: 'application/json' })
+  if (!navigator.canShare?.({ files: [file] })) {
+    throw new Error('เครื่องนี้ส่งไฟล์ผ่านแผงแชร์ไม่ได้ — ใช้ปุ่มดาวน์โหลดแทน')
+  }
+  try {
+    await navigator.share({ files: [file], title: file.name })
+  } catch (e) {
+    // ปิดแผงแชร์ทิ้ง = AbortError ซึ่งไม่ใช่ความผิดพลาด
+    if (e instanceof DOMException && e.name === 'AbortError') return 'cancelled'
+    throw e
+  }
+  return 'shared'
+}
+
 /** นำเข้าข้อมูลจากไฟล์สำรอง (แทนที่ข้อมูลปัจจุบันทั้งหมด) */
 export async function importBackup(file: File): Promise<void> {
   const text = await file.text()

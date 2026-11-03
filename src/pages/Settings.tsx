@@ -33,12 +33,14 @@ import {
 import {
   BACKUP_KEEP,
   backupFolderSupported,
+  backupShareSupported,
   clearAllData,
   exportBackup,
   getBackupFolder,
   importBackup,
   markBackedUp,
   pickBackupFolder,
+  shareBackupFile,
   writeBackupToFolder,
 } from '../lib/backup'
 import { ensureOwnerStaff, seedSampleData } from '../db/seed'
@@ -779,6 +781,7 @@ export default function Settings() {
      handle ของโฟลเดอร์อยู่ในตาราง appState (แปลงเป็น JSON ไม่ได้) จึงอ่านชื่อมาแสดงแยก
      การเลือกโฟลเดอร์/ขอสิทธิ์ต้องเกิดจากการกดของผู้ใช้เท่านั้น เรียกเองตอนโหลดหน้าไม่ได้ */
   const backupSupported = backupFolderSupported()
+  const shareSupported = backupShareSupported()
   const [backupFolder, setBackupFolder] = useState<string | null>(null)
   const [backupBusy, setBackupBusy] = useState(false)
   /** ถามยืนยันหลังดาวน์โหลดไฟล์ (เบราว์เซอร์ที่บอกไม่ได้ว่าผู้ใช้กดยกเลิกหรือไม่) */
@@ -842,6 +845,15 @@ export default function Settings() {
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return
       toast.error('สำรองข้อมูลไม่สำเร็จ')
+    }
+  }
+
+  /** ส่งไฟล์สำรองเข้าแผงแชร์ (iPad/iPhone) — ต้องให้ยืนยันเหมือนทางดาวน์โหลด ดูเหตุผลใน backup.ts */
+  const doShare = async () => {
+    try {
+      if ((await shareBackupFile()) === 'shared') setAskSavedOpen(true)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'ส่งไฟล์สำรองไม่สำเร็จ')
     }
   }
 
@@ -1818,6 +1830,21 @@ export default function Settings() {
                   </Button>
                 }
               />
+              {/* iPad/iPhone เขียนไฟล์ลงโฟลเดอร์เองไม่ได้ — แผงแชร์เป็นทางเดียวที่ส่งขึ้น
+                  Google Drive ได้จากในแอปโดยไม่ต้องไปงมไฟล์ในแอป Files ทีหลัง
+                  บนเครื่องที่เลือกโฟลเดอร์ได้ไม่ต้องแสดง เพราะสำรองอัตโนมัติดีกว่าอยู่แล้ว */}
+              {!backupSupported && shareSupported && (
+                <DataRow
+                  icon="upload"
+                  title="ส่งไฟล์สำรองขึ้น Google Drive / iCloud"
+                  desc="เปิดแผงแชร์ของเครื่องให้เลือกปลายทางได้เลย — เร็วกว่าดาวน์โหลดแล้วไปหาไฟล์ในแอป Files"
+                  action={
+                    <Button variant="secondary" icon="upload" onClick={() => void doShare()}>
+                      ส่งไฟล์สำรอง
+                    </Button>
+                  }
+                />
+              )}
               <DataRow
                 icon="shield"
                 title="สำรองอัตโนมัติลงโฟลเดอร์"
@@ -1828,7 +1855,11 @@ export default function Settings() {
                 }
                 desc={
                   !backupSupported ? (
-                    'เบราว์เซอร์นี้ยังเขียนไฟล์ลงโฟลเดอร์เองไม่ได้ (ใช้ Chrome หรือ Edge บนคอมพิวเตอร์) — ระหว่างนี้ระบบจะเตือนให้กดสำรองเองแทน'
+                    shareSupported ? (
+                      'เบราว์เซอร์นี้ยังเขียนไฟล์ลงโฟลเดอร์เองไม่ได้ (ต้อง Chrome หรือ Edge บนคอมพิวเตอร์) — บนเครื่องนี้ให้ใช้ปุ่ม "ส่งไฟล์สำรอง" ด้านบนแทน แล้วเลือก Google Drive ระบบจะขึ้นแถบเตือนให้ทุกวันเอง'
+                    ) : (
+                      'เบราว์เซอร์นี้ยังเขียนไฟล์ลงโฟลเดอร์เองไม่ได้ (ใช้ Chrome หรือ Edge บนคอมพิวเตอร์) — ระหว่างนี้ระบบจะเตือนให้กดสำรองเองแทน'
+                    )
                   ) : (
                     <>
                       เลือกโฟลเดอร์ไว้ครั้งเดียว จากนั้นระบบจะเขียนไฟล์สำรองให้เองวันละครั้งตอนเปิดแอป
@@ -2025,7 +2056,7 @@ export default function Settings() {
         open={askSavedOpen}
         onClose={() => setAskSavedOpen(false)}
         title="บันทึกไฟล์สำรองแล้วหรือยัง?"
-        message="ถ้ากดยกเลิกในหน้าต่างดาวน์โหลด ไฟล์สำรองจะไม่ถูกสร้าง — ยืนยันเมื่อเห็นไฟล์ในเครื่องแล้วเท่านั้น"
+        message="ถ้ากดยกเลิกในหน้าต่างดาวน์โหลดหรือแผงแชร์ ไฟล์สำรองจะไม่ถูกสร้าง — ยืนยันเมื่อเห็นไฟล์ที่ปลายทางแล้วเท่านั้น"
         confirmLabel="บันทึกไฟล์แล้ว"
         onConfirm={() => {
           void markBackedUp().then(() => toast.success('บันทึกเวลาสำรองล่าสุดแล้ว'))

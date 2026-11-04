@@ -17,6 +17,7 @@ import {
 import { dayKey } from '../lib/format'
 import type { PermissionKey } from '../db/types'
 import { Button, ConfirmDialog, Icon, toast, type IconName } from './ui'
+import PrintBridge from './PrintBridge'
 
 interface NavItem {
   to: string
@@ -369,6 +370,7 @@ export default function Layout() {
           )}
         </header>
 
+        <PrintBridge />
         <BackupReminder />
         <div className="min-h-0 flex-1 overflow-hidden">
           <Outlet />

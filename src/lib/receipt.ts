@@ -212,12 +212,46 @@ function printHtml(html: string) {
   setTimeout(() => window.print(), 60)
 }
 
+/* =========================================================
+   ทางออกไปเครื่องพิมพ์เครื่องอื่น (สะพานพิมพ์ในวง LAN)
+
+   เครื่องที่พิมพ์เองไม่ได้ (มือถือที่ต่อเครื่องพิมพ์ความร้อนไม่ได้) จะฝากงานไว้ที่
+   เครื่องเคาน์เตอร์แทน · ทำเป็นตัวแปรระดับโมดูลเพื่อให้ **จุดที่เรียกพิมพ์ทั้งหมด
+   ไม่ต้องแก้เลย** — ทุกที่ยังเรียก printReceipt() เหมือนเดิม
+   ========================================================= */
+
+/** คืน true = รับงานไปส่งต่อแล้ว เครื่องนี้ไม่ต้องพิมพ์เอง */
+type RemotePrinter = (kind: 'receipt' | 'kitchen', sale: Sale, opts?: { copy?: boolean }) => boolean
+
+let remotePrinter: RemotePrinter | null = null
+
+/** ตั้ง/ถอดตัวส่งงานพิมพ์ไปเครื่องอื่น (ถอดด้วยการส่ง null) */
+export function setRemotePrinter(fn: RemotePrinter | null): void {
+  remotePrinter = fn
+}
+
 /** พิมพ์ใบเสร็จ / ใบคืนสินค้า ผ่านหน้าต่างพิมพ์ของเบราว์เซอร์ */
 export function printReceipt(sale: Sale, settings: Settings, opts?: { copy?: boolean }) {
+  if (remotePrinter?.('receipt', sale, opts)) return
   printHtml(buildReceiptHtml(sale, settings, opts))
 }
 
 /** พิมพ์สลิปครัว/บาร์ */
 export function printKitchenSlip(sale: Sale, settings: Settings) {
+  if (remotePrinter?.('kitchen', sale)) return
   printHtml(buildKitchenSlipHtml(sale, settings))
+}
+
+/** พิมพ์งานที่รับมาจากสะพาน — ใช้ค่าตั้งค่าของ "เครื่องที่พิมพ์" ไม่ใช่ของเครื่องที่ส่งมา */
+export function printIncomingJob(
+  kind: 'receipt' | 'kitchen',
+  sale: Sale,
+  settings: Settings,
+  opts?: { copy?: boolean },
+) {
+  printHtml(
+    kind === 'kitchen'
+      ? buildKitchenSlipHtml(sale, settings)
+      : buildReceiptHtml(sale, settings, opts),
+  )
 }

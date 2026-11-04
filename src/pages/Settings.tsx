@@ -44,6 +44,12 @@ import {
   writeBackupToFolder,
 } from '../lib/backup'
 import { ensureOwnerStaff, seedSampleData } from '../db/seed'
+import {
+  isPrintHost,
+  probeBridge,
+  setPrintHost,
+  type BridgeHealth,
+} from '../lib/printBridge'
 import { resizeImage } from '../lib/image'
 import { printKitchenSlip, printReceipt } from '../lib/receipt'
 import {
@@ -780,6 +786,27 @@ export default function Settings() {
   /* ----- สำรองอัตโนมัติ -----
      handle ของโฟลเดอร์อยู่ในตาราง appState (แปลงเป็น JSON ไม่ได้) จึงอ่านชื่อมาแสดงแยก
      การเลือกโฟลเดอร์/ขอสิทธิ์ต้องเกิดจากการกดของผู้ใช้เท่านั้น เรียกเองตอนโหลดหน้าไม่ได้ */
+  /* ===== สะพานพิมพ์ในวง LAN =====
+     bridge = null แปลว่าแอปนี้ไม่ได้เปิดผ่านสะพาน (เช่นเปิดจาก GitHub Pages)
+     ⇒ ไม่ต้องแสดงสวิตช์เลย ไม่งั้นจะมีตัวเลือกที่กดแล้วไม่เกิดอะไรขึ้น */
+  const [bridge, setBridge] = useState<BridgeHealth | null>(null)
+  const printHost = useLiveQuery(async () => isPrintHost(), [], false) ?? false
+  useEffect(() => {
+    let alive = true
+    void probeBridge().then((h) => alive && setBridge(h))
+    return () => {
+      alive = false
+    }
+  }, [])
+  const togglePrintHost = async (on: boolean) => {
+    await setPrintHost(on)
+    toast.success(
+      on
+        ? 'ตั้งเครื่องนี้เป็นเครื่องพิมพ์ของร้านแล้ว — เปิดแอปค้างไว้ตอนเปิดร้าน'
+        : 'ยกเลิกแล้ว — เครื่องนี้จะส่งใบเสร็จไปพิมพ์ที่เครื่องเคาน์เตอร์แทน',
+    )
+  }
+
   const backupSupported = backupFolderSupported()
   const shareSupported = backupShareSupported()
   const [backupFolder, setBackupFolder] = useState<string | null>(null)
@@ -1125,6 +1152,33 @@ export default function Settings() {
                 </span>
               </div>
             </div>
+
+            {/* ----- สะพานพิมพ์ในวง LAN (ขึ้นเฉพาะเครื่องที่เปิดแอปผ่านสะพาน) ----- */}
+            {bridge && (
+              <div className="mt-4 border-t border-slate-100 pt-4">
+                <Toggle
+                  checked={printHost}
+                  onChange={(on) => void togglePrintHost(on)}
+                  label="เครื่องนี้เป็นเครื่องพิมพ์ของร้าน"
+                />
+                <span className="mt-1 block text-xs leading-relaxed text-slate-400">
+                  เปิดบน <span className="font-medium text-slate-600">เครื่องที่ต่อเครื่องพิมพ์</span>{' '}
+                  เครื่องเดียวเท่านั้น — เครื่องนี้จะคอยรับใบเสร็จที่มือถือสั่งพิมพ์มาแล้วพิมพ์ให้
+                  ต้องเปิดแอปค้างไว้ตลอดเวลาที่เปิดร้าน (จะย่อหน้าต่างไว้ก็ได้)
+                  {printHost ? (
+                    <span className="mt-1 block font-medium text-emerald-700">
+                      กำลังรอรับงานพิมพ์จากมือถืออยู่
+                      {bridge.queued > 0 ? ` · มีงานค้าง ${bridge.queued} ใบ` : ''}
+                    </span>
+                  ) : (
+                    <span className="mt-1 block font-medium text-slate-600">
+                      ปิดอยู่ = เครื่องนี้ส่งใบเสร็จไปพิมพ์ที่เครื่องเคาน์เตอร์แทนการพิมพ์เอง
+                      {bridge.printerReady ? '' : ' · ตอนนี้ยังไม่มีเครื่องไหนรับหน้าที่พิมพ์'}
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
 
             <div className="mt-5 flex flex-wrap justify-end gap-2">
               {kitchenPrintEnabled && (
